@@ -12,7 +12,7 @@ from google import genai
 from google.genai import types
 
 # --- CONFIGURATION ---
-USER_DATA_DIR = r"C:\Users\pc\AppData\Local\BraveSoftware\Brave-Browser\User Data"
+USER_DATA_DIR = r"C:\Users\hp\AppData\Local\BraveSoftware\Brave-Browser\User Data"
 PROFILE_NAME = "Default"
 URL = "https://www.marchespublics.gov.ma/pmmp/"
 BRAVE_PATH = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
@@ -1179,62 +1179,125 @@ def fill_tender_form(page):
 # ---------------- FILTER LOGIC ----------------
 def apply_logic(page, filter_data=None):
     try:
+        # 1. التوجه أولاً لصفحة البحث المتقدم أو Avis d'achat لفتح الخانات
+        try:
+            page.get_by_role("link", name="Recherche avancée").first.click()
+            page.wait_for_load_state("networkidle")
+        except Exception:
+            page.get_by_role("link", name="Avis d'achat en cours").click()
+            page.wait_for_load_state("networkidle")
+
         if USE_FILTER and filter_data:
-            filter_menu = page.get_by_role("button").nth(3)
-            filter_menu.wait_for(state="visible", timeout=6000)
-            filter_menu.click()
-            page.wait_for_timeout(500) # Give the entire filter panel a moment to animate drop-down
-            
-            if filter_data.get('nature_val'):
-                page.get_by_label("Nature de prestation").select_option(filter_data['nature_val'])
-                page.wait_for_timeout(300)
-            
-            if filter_data['limit_start']:
+            # 2. فتح قائمة الفلاتر إذا كانت مخفية
+            try:
+                filter_menu = page.get_by_role("button").nth(3)
+                if filter_menu.is_visible():
+                    filter_menu.click()
+                    page.wait_for_timeout(500)
+            except Exception:
+                pass
+
+            # 3. اختيار Prestation / Nature de prestation
+            presta_code = filter_data.get('current_prestation') or filter_data.get('nature_val')
+            if presta_code:
+                try:
+                    page.get_by_label("Nature de prestation").select_option(str(presta_code))
+                    page.wait_for_timeout(300)
+                except Exception:
+                    pass
+
+            # 4. تعبئة التواريخ بالترتيب
+            if filter_data.get('limit_start'):
                 page.get_by_role("textbox", name="Début").first.click()
-                page.wait_for_timeout(300) # Give calendar UI time to render
-                page.get_by_label(filter_data['limit_start']).first.click()
-            
-            if filter_data['limit_end']:
-                page.get_by_role("textbox", name="Fin").first.click()
-                page.wait_for_timeout(300) # Give calendar UI time to render
-                page.get_by_label(filter_data['limit_end']).nth(1).click()
-            
-            if filter_data['online_start']:
-                page.get_by_role("textbox", name="Début").nth(1).click()
-                page.wait_for_timeout(300) # Give calendar UI time to render
-                page.get_by_label(filter_data['online_start']).nth(2).click()
-            
-            if filter_data['online_end']:
-                page.get_by_role("textbox", name="Fin").nth(1).click()
-                page.wait_for_timeout(300) # Give calendar UI time to render
-                page.get_by_label(filter_data['online_end']).nth(3).click()
-            
-            if filter_data['cat_value']:
-                page.get_by_label("Catégorie principale").select_option(filter_data['cat_value'])
                 page.wait_for_timeout(300)
+                page.get_by_label(filter_data['limit_start']).first.click()
+
+            if filter_data.get('limit_end'):
+                page.get_by_role("textbox", name="Fin").first.click()
+                page.wait_for_timeout(300)
+                page.get_by_label(filter_data['limit_end']).nth(1).click()
+
+            if filter_data.get('online_start'):
+                page.get_by_role("textbox", name="Début").nth(1).click()
+                page.wait_for_timeout(300)
+                page.get_by_label(filter_data['online_start']).nth(2).click()
+
+            if filter_data.get('online_end'):
+                page.get_by_role("textbox", name="Fin").nth(1).click()
+                page.wait_for_timeout(300)
+                page.get_by_label(filter_data['online_end']).nth(3).click()
+
+            # 5. الضغط على زر البحث Rechercher
+            search_btn = page.get_by_role("button", name="Lancer la recherche")
+            if not search_btn.is_visible():
+                search_btn = page.locator("input[value='Rechercher'], button:has-text('Rechercher')").first
             
-            search_btn = page.get_by_role("button", name="Lancer la recherche ")
-            safe_click(search_btn)
-        else:
-            search_btn = page.get_by_role("button", name="Lancer la recherche ")
-            safe_click(search_btn)
-            
-        smart_wait(page, "a:has-text('Référence')")
-        bookmark_url = page.url
-        print(f"🔖 Bookmark URL saved: {bookmark_url}")
-        return bookmark_url
+            search_btn.click()
+            page.wait_for_load_state("networkidle")
+
+            return page.url
+
     except Exception as e:
-        import traceback
         print(f"⚠️ Filter logic error: {e}")
-        traceback.print_exc()  # Visually show exactly which line failed in the terminal
         return page.url
 
 # ---------------- MAIN ----------------
+def check_and_fill_devis(page, default_price="100.00"):
+    """
+    فحص وتعبئة الـ Devis في حالة كان فارغاً
+    """
+    try:
+        page.wait_for_load_state("domcontentloaded")
+        
+        # 1. البحث عن تبويب الـ Devis / Offre financière
+        devis_tab = page.locator("a:has-text('Bordereau des prix'), a:has-text('Offre financière'), button:has-text('Remplir')").first
+        if devis_tab.is_visible():
+            devis_tab.click()
+            page.wait_for_load_state("networkidle")
+
+        # 2. البحث عن حقول إدخال الأسعار (Prix Unitaire)
+        price_inputs = page.locator("input[name*='prix'], input[id*='prix'], input[class*='price']").all()
+
+        if not price_inputs:
+            print("⏭️ Fields not visible (already filled or expired). Skipping to next URL.")
+            return
+
+        need_filling = False
+        # 3. التأكد من وجود حقول فارغة أو قيمتها 0
+        for inp in price_inputs:
+            if inp.is_visible() and inp.is_enabled():
+                val = inp.input_value().strip()
+                if val in ["", "0", "0.00", "0,00"]:
+                    need_filling = True
+                    break
+
+        # 4. تعبئة الأسعار
+        if need_filling:
+            print("✍️ Devis vide détecté! Remplissage des prix...")
+            for idx, inp in enumerate(price_inputs):
+                if inp.is_visible() and inp.is_enabled():
+                    inp.fill(str(default_price))
+                    print(f"   ↳ Ligne {idx + 1}: Prix {default_price} DH appliqué.")
+
+            # 5. الضغط على زر الحفظ Valider / Enregistrer
+            save_btn = page.locator("button:has-text('Enregistrer'), input[value*='Enregistrer'], button:has-text('Valider')").first
+            if save_btn.is_visible():
+                save_btn.click()
+                page.wait_for_load_state("networkidle")
+                print("✅ Devis rempli et enregistré avec succès!")
+            else:
+                print("⚠️ Bouton d'enregistrement introuvable.")
+        else:
+            print("ℹ️ Devis déjà rempli. Aucune modification nécessaire.")
+
+    except Exception as e:
+        print(f"❌ Erreur lors du traitement du devis: {e}")
+
+
 def run_automation():
     print("🧹 Loading previously processed tenders to prevent duplicates...")
     existing_urls = set()
     
-    # Safely load history instead of wiping it
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, "r") as f:
             for line in f:
@@ -1243,9 +1306,9 @@ def run_automation():
                     existing_urls.add(url)
         print(f"🧠 Memory Loaded: Found {len(existing_urls)} already processed tenders.")
     else:
-        # Create it empty if it's the very first run
         with open(PROCESSED_FILE, "w") as f:
             pass
+        print(f"🧠 Memory Loaded: Found 0 already processed tenders.")
 
     filter_data = None
     if USE_FILTER:
@@ -1255,15 +1318,22 @@ def run_automation():
         o_start = input("📅 Mise en ligne - Début (DD/MM/YYYY): ")
         o_end   = input("📅 Mise en ligne - Fin (DD/MM/YYYY): ")
         cat_choice = input("📂 Category (1:Travaux, 2:Fournitures, 3:Services): ")
-        nature_choice = input("🧹 Filter Nature 80? (y/n): ")
+
+        print("\n--- 🔄 PRESTATION FILTERS (Round-Robin) ---")
+        print("Available:")
+        print("  80 = Prestation de jardinage, de gardiennage et de nettoyage")
+        print("  97 = Prestations médicales, hospitalières, radiologiques, d’analyse médicale et de brancardage")
+        prestation_input = input("Enter prestation codes to cycle (comma-separated, e.g. 80,97): ")
+
+        presta_codes = [code.strip() for code in prestation_input.split(",") if code.strip()]
 
         filter_data = {
-            'limit_start': get_french_date_label(l_start),
-            'limit_end': get_french_date_label(l_end),
-            'online_start': get_french_date_label(o_start),
-            'online_end': get_french_date_label(o_end),
+            'limit_start': get_french_date_label(l_start) if l_start else None,
+            'limit_end': get_french_date_label(l_end) if l_end else None,
+            'online_start': get_french_date_label(o_start) if o_start else None,
+            'online_end': get_french_date_label(o_end) if o_end else None,
             'cat_value': cat_choice.strip() if cat_choice.strip() else None,
-            'nature_val': '80' if nature_choice.lower() == 'y' else None
+            'prestation_codes': presta_codes
         }
 
     with sync_playwright() as p:
@@ -1286,101 +1356,69 @@ def run_automation():
             avis_link.click()
             
             login_sequence(page)
-            
-            page.get_by_role("link", name="Avis d'achat en cours").click()
-            page.wait_for_load_state("networkidle")
-            
-            bookmark_url = apply_logic(page, filter_data)
 
-            # --- PHASE 1: COLLECT URLS ---
-            all_tender_urls = []
-            current_page_idx = 1
-            print("🔍 Starting initial URL collection phase...")
-            while True:
-                page.wait_for_load_state("domcontentloaded")
-                page.wait_for_selector("a:has-text('Référence')", timeout=7000)
-                
-                offers = page.locator("a:has-text('Référence')").all()
-                if not offers: break
-                
-                found_on_page = 0
-                for o in offers:
-                    href = o.get_attribute("href")
-                    if href:
-                        full_url = urljoin(URL, href)
-                        if full_url not in existing_urls:
-                            all_tender_urls.append(full_url)
-                            with open(PROCESSED_FILE, "a") as f:
-                                f.write(full_url + "\n")
-                            existing_urls.add(full_url)
-                            found_on_page += 1
-                
-                print(f"📄 Page {current_page_idx}: Found {found_on_page} new tenders.")
-                
-                next_page_val = current_page_idx + 1
-                next_btn = page.get_by_role("link", name=str(next_page_val), exact=True)
-                
-                if next_btn.is_visible():
-                    next_btn.click()
-                    page.wait_for_load_state("networkidle")
-                    current_page_idx = next_page_val
-                else:
-                    print("🏁 Reached last page of results.")
-                    break
+            # --- PHASE 1 & 2: COLLECT & PROCESS TENDERS PER PRESTATION ---
+            presta_codes = filter_data.get('prestation_codes', [None]) if filter_data else [None]
 
-            print(f"📑 Total Tenders collected initially: {len(all_tender_urls)}")
+            for code in presta_codes:
+                print(f"\n==========================================")
+                print(f"🔄 Processing Filter: prestation = {code}")
+                print(f"==========================================")
+                
+                if filter_data:
+                    filter_data['current_prestation'] = code
 
-            # --- PHASE 2: PROCESS URLS ---
-            def process_tenders(urls):
-                for idx, tender_url in enumerate(urls, 1):
-                    print(f"🔗 Processing: {tender_url}")
-                    try:
-                        page.goto(tender_url, wait_until="domcontentloaded", timeout=30000)
-                        fill_tender_form(page)
-                        page.wait_for_timeout(500)
-                    except Exception as e:
-                        print(f"⚠️ Error on tender: {e}")
-                        continue
+                bookmark_url = apply_logic(page, filter_data)
 
-            process_tenders(all_tender_urls)
-
-            # --- PHASE 3: MONITORING LOOP ---
-            print("\n🕒 Entering monitoring mode. Checking for new tenders every 30s...")
-            while True:
-                print(f"🔄 Returning to bookmark and refreshing: {datetime.now().strftime('%H:%M:%S')}")
-                try:
-                    page.goto(bookmark_url, wait_until="domcontentloaded", timeout=30000)
+                all_tender_urls = []
+                current_page_idx = 1
+                while True:
+                    page.wait_for_load_state("domcontentloaded")
                     page.wait_for_selector("a:has-text('Référence')", timeout=7000)
                     
-                    new_batch = []
                     offers = page.locator("a:has-text('Référence')").all()
+                    if not offers: break
                     
+                    found_on_page = 0
                     for o in offers:
                         href = o.get_attribute("href")
                         if href:
                             full_url = urljoin(URL, href)
                             if full_url not in existing_urls:
-                                print(f"✨ New tender found: {full_url}")
-                                new_batch.append(full_url)
+                                all_tender_urls.append(full_url)
                                 with open(PROCESSED_FILE, "a") as f:
                                     f.write(full_url + "\n")
                                 existing_urls.add(full_url)
+                                found_on_page += 1
                     
-                    if new_batch:
-                        print(f"🚀 Processing {len(new_batch)} newly discovered tenders...")
-                        process_tenders(new_batch)
-                        page.goto(bookmark_url, wait_until="domcontentloaded", timeout=30000)
+                    print(f"📄 Page {current_page_idx}: Found {found_on_page} new tenders.")
+                    
+                    next_page_val = current_page_idx + 1
+                    next_btn = page.get_by_role("link", name=str(next_page_val), exact=True)
+                    
+                    if next_btn.is_visible():
+                        next_btn.click()
+                        page.wait_for_load_state("networkidle")
+                        current_page_idx = next_page_val
                     else:
-                        print("😴 No new tenders found. Waiting 30s...")
-                    
-                    page.wait_for_timeout(30000)
-                    
-                except Exception as e:
-                    print(f"⚠️ Monitoring error (retrying in 10s): {e}")
-                    page.wait_for_timeout(10000)
+                        print("🏁 Reached last page of results.")
+                        break
 
-        finally:
-            browser.close()
+                print(f"📑 Tenders collected for prestation {code}: {len(all_tender_urls)}")
+
+                # --- PHASE 2: FILL DEVIS ---
+                print(f"\n🚀 Processing tenders for prestation {code}...")
+                for tender_url in all_tender_urls:
+                    print(f"\n🔗 Processing: {tender_url}")
+                    try:
+                        page.goto(tender_url, wait_until="networkidle", timeout=60000)
+                        check_and_fill_devis(page, default_price="100.00")
+                    except Exception as err:
+                        print(f"❌ Error on URL {tender_url}: {err}")
+
+        except Exception as e:
+            print(f"❌ Error during automation: {e}")
+
 
 if __name__ == "__main__":
     run_automation()

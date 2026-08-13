@@ -35,7 +35,7 @@ def safe_math_eval(formula_str):
         return None
 
 # --- CONFIGURATION ---
-DOWNLOAD_PATH = r"C:\Users\pc\Downloads\MarchePublics"
+DOWNLOAD_PATH = r"C:\Users\hp\Downloads\MarchePublics"
 LIBREOFFICE_PATH = r"C:\Program Files\LibreOffice\program\soffice.exe"
 GEMINI_API_KEY = "AQ.Ab8RN6L_THx_EQge9kV5lxFzRGFtCKy6985musRmfkB5QsDBUQ"
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
