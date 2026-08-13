@@ -320,7 +320,7 @@ Quantité: "{quantity}"
                 media_resolution="MEDIA_RESOLUTION_UNSPECIFIED",
                 response_mime_type="application/json",
             )
-            
+            time.sleep(13)  # Respect RPM limit (5 requests/minute = 1 every 12s)
             for chunk in gemini_client.models.generate_content_stream(
                 model="gemini-3-flash-preview",
                 contents=contents,
@@ -340,9 +340,9 @@ Quantité: "{quantity}"
                     response_mime_type="application/json",
                 )
                 
-                full_response_text = "" # Reset buffer
+                time.sleep(13)  # Respect RPM limit before fallback call
                 for chunk in gemini_client.models.generate_content_stream(
-                    model="gemini-2.5-pro",
+                    model="gemini-2.5-flash",
                     contents=contents,
                     config=fallback_config,
                 ):
