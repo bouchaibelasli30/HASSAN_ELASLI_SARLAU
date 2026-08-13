@@ -189,8 +189,10 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                 response_mime_type="application/json",
             )
             
+            time.sleep(13)  # Respect RPM limit
             for chunk in gemini_client.models.generate_content_stream(
-                model="gemini-3-flash-preview",
+             model="gemini-3-flash-preview",
+    
                 contents=contents,
                 config=primary_config,
             ):
@@ -228,12 +230,13 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                     )
                     
                     full_response_text = "" # Reset buffer
-                    for chunk in gemini_client.models.generate_content_stream(
-                        model="gemini-2.5-pro",
-                        contents=contents,
-                        config=fallback_config,
-                    ):
-                        full_response_text += (chunk.text or "")
+                time.sleep(13)  # Respect RPM limit
+            for chunk in gemini_client.models.generate_content_stream(
+             model="gemini-2.5-flash",
+             contents=contents,
+             config=fallback_config,
+):
+    full_response_text += (chunk.text or "") 
                         
                     # Parse Fallback Response
                     match = re.search(r'\{.*\}', full_response_text, re.DOTALL)
