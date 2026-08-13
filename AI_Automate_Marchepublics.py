@@ -1198,8 +1198,10 @@ def fill_tender_form(page):
                     except Exception as e:
                         print(f"⚠️ Verification Failed: Could not find success message. {e}")
 
-    except Exception as e:
-        print(f"⚠️ Error in form: {e}")
+  except Exception as e:
+        import traceback
+        print(f"⚠️ Error in form: {type(e).__name__}: {e}")
+        traceback.print_exc()
 
 # ---------------- PAGE SIZE ----------------
 def set_page_size(page, size=PAGE_SIZE):
