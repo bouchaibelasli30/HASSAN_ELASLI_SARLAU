@@ -18,6 +18,18 @@ URL = "https://www.marchespublics.gov.ma/pmmp/"
 BRAVE_PATH = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
 PROCESSED_FILE = "processed_tenders.txt"
 
+# 🔧 FIX: anchor the file to THIS script's own folder instead of the terminal's
+# current working directory (which changes depending on where you run "python ..." from).
+# NOTE: keep the line above ("PROCESSED_FILE = \"processed_tenders.txt\"") EXACTLY as-is —
+# Mercahova_Service_Launcher.py does a string-replace on it to inject its own managed path
+# when running this script through GitHub. This fallback only kicks in when PROCESSED_FILE
+# is still a relative path (i.e. running this .py file directly, not via the launcher).
+if not os.path.isabs(PROCESSED_FILE):
+    try:
+        PROCESSED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), PROCESSED_FILE)
+    except NameError:
+        pass  # __file__ not defined (e.g. interactive session) — fall back to relative path
+
 # --- GEMINI API CONFIG ---
 GEMINI_API_KEY = "AQ.Ab8RN6L_THx_EQge9kV5lxFzRGFtCKy6985musRmfkB5QsDBUQ"
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY # Set for potential sub-processes
@@ -60,6 +72,18 @@ USE_FILTER = True
 
 # --- COMPETITIVE PRICING ---
 PRICE_UNDERCUT = 0  # DH to subtract from every price (0 = disabled)
+
+# --- PRESTATION ROUND-ROBIN CONFIG ---
+AVAILABLE_PRESTATIONS = {
+    "80": "Prestation de jardinage, de gardiennage et de nettoyage",
+    "97": "Prestations médicales, hospitalières, radiologiques, d'analyse médicale et de brancardage",
+}
+PAGE_SIZE = 50                    # Tenders per page on the results page
+AUTO_SET_PAGE_SIZE = False        # ⚠️ Disabled: unverified selector was corrupting search results
+                                   # (bookmark for prestation 80 kept pageSize=10 instead of 50,
+                                   # right after which the search returned 0 tenders). Re-enable
+                                   # only after confirming the correct <select> element manually.
+MONITOR_INTERVAL_SECONDS = 15     # Wait time between each full round-robin monitoring cycle
 
 # ---------------- AI UTILS ----------------
 import json
@@ -1176,128 +1200,85 @@ def fill_tender_form(page):
     except Exception as e:
         print(f"⚠️ Error in form: {e}")
 
-# ---------------- FILTER LOGIC ----------------
-def apply_logic(page, filter_data=None):
+# ---------------- PAGE SIZE ----------------
+def set_page_size(page, size=PAGE_SIZE):
+    """Best-effort: tries to set the results-per-page dropdown. Never crashes the run if it fails."""
     try:
-        # 1. التوجه أولاً لصفحة البحث المتقدم أو Avis d'achat لفتح الخانات
-        try:
-            page.get_by_role("link", name="Recherche avancée").first.click()
-            page.wait_for_load_state("networkidle")
-        except Exception:
-            page.get_by_role("link", name="Avis d'achat en cours").click()
-            page.wait_for_load_state("networkidle")
+        page_size_select = page.locator(
+            "select[name*='pageSize'], select[id*='pageSize'], select[name*='PageSize']"
+        ).first
+        page_size_select.wait_for(state="visible", timeout=3000)
+        page_size_select.select_option(str(size))
+        page.wait_for_load_state("networkidle")
+        print(f"📋 Page size set to {size} tenders per page.")
+    except Exception:
+        print(f"⚠️ Could not auto-set page size (selector may differ) — continuing anyway.")
 
+# ---------------- FILTER LOGIC ----------------
+def apply_logic(page, filter_data=None, nature_val=None, first_run=True):
+    try:
         if USE_FILTER and filter_data:
-            # 2. فتح قائمة الفلاتر إذا كانت مخفية
-            try:
-                filter_menu = page.get_by_role("button").nth(3)
-                if filter_menu.is_visible():
-                    filter_menu.click()
-                    page.wait_for_timeout(500)
-            except Exception:
-                pass
+            filter_menu = page.get_by_role("button").nth(3)
+            filter_menu.wait_for(state="visible", timeout=6000)
+            filter_menu.click()
+            page.wait_for_timeout(500) # Give the entire filter panel a moment to animate drop-down
 
-            # 3. اختيار Prestation / Nature de prestation
-            presta_code = filter_data.get('current_prestation') or filter_data.get('nature_val')
-            if presta_code:
-                try:
-                    page.get_by_label("Nature de prestation").select_option(str(presta_code))
+            # Date & category filters only need to be applied ONCE (they stay the same
+            # across every prestation in the round-robin). Only the "Nature de prestation"
+            # dropdown changes between cycles.
+            if first_run:
+                if filter_data['limit_start']:
+                    page.get_by_role("textbox", name="Début").first.click()
+                    page.wait_for_timeout(300) # Give calendar UI time to render
+                    page.get_by_label(filter_data['limit_start']).first.click()
+
+                if filter_data['limit_end']:
+                    page.get_by_role("textbox", name="Fin").first.click()
+                    page.wait_for_timeout(300) # Give calendar UI time to render
+                    page.get_by_label(filter_data['limit_end']).nth(1).click()
+
+                if filter_data['online_start']:
+                    page.get_by_role("textbox", name="Début").nth(1).click()
+                    page.wait_for_timeout(300) # Give calendar UI time to render
+                    page.get_by_label(filter_data['online_start']).nth(2).click()
+
+                if filter_data['online_end']:
+                    page.get_by_role("textbox", name="Fin").nth(1).click()
+                    page.wait_for_timeout(300) # Give calendar UI time to render
+                    page.get_by_label(filter_data['online_end']).nth(3).click()
+
+                if filter_data['cat_value']:
+                    page.get_by_label("Catégorie principale").select_option(filter_data['cat_value'])
                     page.wait_for_timeout(300)
-                except Exception:
-                    pass
 
-            # 4. تعبئة التواريخ بالترتيب
-            if filter_data.get('limit_start'):
-                page.get_by_role("textbox", name="Début").first.click()
+            if nature_val:
+                page.get_by_label("Nature de prestation").select_option(nature_val)
                 page.wait_for_timeout(300)
-                page.get_by_label(filter_data['limit_start']).first.click()
 
-            if filter_data.get('limit_end'):
-                page.get_by_role("textbox", name="Fin").first.click()
-                page.wait_for_timeout(300)
-                page.get_by_label(filter_data['limit_end']).nth(1).click()
+            search_btn = page.get_by_role("button", name="Lancer la recherche ")
+            safe_click(search_btn)
+        else:
+            search_btn = page.get_by_role("button", name="Lancer la recherche ")
+            safe_click(search_btn)
 
-            if filter_data.get('online_start'):
-                page.get_by_role("textbox", name="Début").nth(1).click()
-                page.wait_for_timeout(300)
-                page.get_by_label(filter_data['online_start']).nth(2).click()
-
-            if filter_data.get('online_end'):
-                page.get_by_role("textbox", name="Fin").nth(1).click()
-                page.wait_for_timeout(300)
-                page.get_by_label(filter_data['online_end']).nth(3).click()
-
-            # 5. الضغط على زر البحث Rechercher
-            search_btn = page.get_by_role("button", name="Lancer la recherche")
-            if not search_btn.is_visible():
-                search_btn = page.locator("input[value='Rechercher'], button:has-text('Rechercher')").first
-            
-            search_btn.click()
-            page.wait_for_load_state("networkidle")
-
-            return page.url
-
+        smart_wait(page, "a:has-text('Référence')")
+        if AUTO_SET_PAGE_SIZE:
+            set_page_size(page, PAGE_SIZE)
+        bookmark_url = page.url
+        print(f"🔖 Bookmark URL saved: {bookmark_url}")
+        return bookmark_url
     except Exception as e:
+        import traceback
         print(f"⚠️ Filter logic error: {e}")
+        traceback.print_exc()  # Visually show exactly which line failed in the terminal
         return page.url
 
 # ---------------- MAIN ----------------
-def check_and_fill_devis(page, default_price="100.00"):
-    """
-    فحص وتعبئة الـ Devis في حالة كان فارغاً
-    """
-    try:
-        page.wait_for_load_state("domcontentloaded")
-        
-        # 1. البحث عن تبويب الـ Devis / Offre financière
-        devis_tab = page.locator("a:has-text('Bordereau des prix'), a:has-text('Offre financière'), button:has-text('Remplir')").first
-        if devis_tab.is_visible():
-            devis_tab.click()
-            page.wait_for_load_state("networkidle")
-
-        # 2. البحث عن حقول إدخال الأسعار (Prix Unitaire)
-        price_inputs = page.locator("input[name*='prix'], input[id*='prix'], input[class*='price']").all()
-
-        if not price_inputs:
-            print("⏭️ Fields not visible (already filled or expired). Skipping to next URL.")
-            return
-
-        need_filling = False
-        # 3. التأكد من وجود حقول فارغة أو قيمتها 0
-        for inp in price_inputs:
-            if inp.is_visible() and inp.is_enabled():
-                val = inp.input_value().strip()
-                if val in ["", "0", "0.00", "0,00"]:
-                    need_filling = True
-                    break
-
-        # 4. تعبئة الأسعار
-        if need_filling:
-            print("✍️ Devis vide détecté! Remplissage des prix...")
-            for idx, inp in enumerate(price_inputs):
-                if inp.is_visible() and inp.is_enabled():
-                    inp.fill(str(default_price))
-                    print(f"   ↳ Ligne {idx + 1}: Prix {default_price} DH appliqué.")
-
-            # 5. الضغط على زر الحفظ Valider / Enregistrer
-            save_btn = page.locator("button:has-text('Enregistrer'), input[value*='Enregistrer'], button:has-text('Valider')").first
-            if save_btn.is_visible():
-                save_btn.click()
-                page.wait_for_load_state("networkidle")
-                print("✅ Devis rempli et enregistré avec succès!")
-            else:
-                print("⚠️ Bouton d'enregistrement introuvable.")
-        else:
-            print("ℹ️ Devis déjà rempli. Aucune modification nécessaire.")
-
-    except Exception as e:
-        print(f"❌ Erreur lors du traitement du devis: {e}")
-
-
 def run_automation():
     print("🧹 Loading previously processed tenders to prevent duplicates...")
     existing_urls = set()
-    
+
+    # Safely load history instead of wiping it
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, "r") as f:
             for line in f:
@@ -1306,11 +1287,13 @@ def run_automation():
                     existing_urls.add(url)
         print(f"🧠 Memory Loaded: Found {len(existing_urls)} already processed tenders.")
     else:
+        # Create it empty if it's the very first run
         with open(PROCESSED_FILE, "w") as f:
             pass
-        print(f"🧠 Memory Loaded: Found 0 already processed tenders.")
 
     filter_data = None
+    prestation_codes = []
+
     if USE_FILTER:
         print("\n--- 🛠️ CONFIG ---")
         l_start = input("📅 Date limite - Début (DD/MM/YYYY): ")
@@ -1321,19 +1304,28 @@ def run_automation():
 
         print("\n--- 🔄 PRESTATION FILTERS (Round-Robin) ---")
         print("Available:")
-        print("  80 = Prestation de jardinage, de gardiennage et de nettoyage")
-        print("  97 = Prestations médicales, hospitalières, radiologiques, d’analyse médicale et de brancardage")
-        prestation_input = input("Enter prestation codes to cycle (comma-separated, e.g. 80,97): ")
+        for code, label in AVAILABLE_PRESTATIONS.items():
+            print(f"  {code} = {label}")
+        nature_input = input("Enter prestation codes to cycle (comma-separated, e.g. 80,97): ").strip()
 
-        presta_codes = [code.strip() for code in prestation_input.split(",") if code.strip()]
+        if nature_input:
+            prestation_codes = [c.strip() for c in nature_input.split(",") if c.strip() in AVAILABLE_PRESTATIONS]
+            if not prestation_codes:
+                print("⚠️ No valid codes recognized — defaulting to ALL available prestations.")
+                prestation_codes = list(AVAILABLE_PRESTATIONS.keys())
+        else:
+            # STRATEGY ON EMPTY ENTER: cycle through every available prestation automatically.
+            print("↩️  No codes entered — auto-cycling through ALL available prestations.")
+            prestation_codes = list(AVAILABLE_PRESTATIONS.keys())
+
+        print(f"✅ Will cycle through prestations: {prestation_codes}")
 
         filter_data = {
-            'limit_start': get_french_date_label(l_start) if l_start else None,
-            'limit_end': get_french_date_label(l_end) if l_end else None,
-            'online_start': get_french_date_label(o_start) if o_start else None,
-            'online_end': get_french_date_label(o_end) if o_end else None,
+            'limit_start': get_french_date_label(l_start),
+            'limit_end': get_french_date_label(l_end),
+            'online_start': get_french_date_label(o_start),
+            'online_end': get_french_date_label(o_end),
             'cat_value': cat_choice.strip() if cat_choice.strip() else None,
-            'prestation_codes': presta_codes
         }
 
     with sync_playwright() as p:
@@ -1341,7 +1333,7 @@ def run_automation():
             user_data_dir=USER_DATA_DIR,
             executable_path=BRAVE_PATH,
             headless=False,
-            slow_mo=40, 
+            slow_mo=40,
             args=[f"--profile-directory={PROFILE_NAME}", "--start-maximized"],
             no_viewport=True
         )
@@ -1350,52 +1342,60 @@ def run_automation():
 
         try:
             page.goto(URL, wait_until="networkidle", timeout=60000)
-            
+
             avis_link = page.get_by_role("link", name="Avis d'achat en cours")
             avis_link.wait_for(state="visible", timeout=10000)
             avis_link.click()
-            
+
             login_sequence(page)
 
-            # --- PHASE 1 & 2: COLLECT & PROCESS TENDERS PER PRESTATION ---
-            presta_codes = filter_data.get('prestation_codes', [None]) if filter_data else [None]
+            page.get_by_role("link", name="Avis d'achat en cours").click()
+            page.wait_for_load_state("networkidle")
 
-            for code in presta_codes:
-                print(f"\n==========================================")
-                print(f"🔄 Processing Filter: prestation = {code}")
-                print(f"==========================================")
-                
-                if filter_data:
-                    filter_data['current_prestation'] = code
+            # --- SAVE ONE BOOKMARK PER PRESTATION (Round-Robin) ---
+            bookmarks = {}  # code -> bookmark_url  (code is None when USE_FILTER is off)
+            if USE_FILTER and prestation_codes:
+                for i, code in enumerate(prestation_codes):
+                    print("\n" + "=" * 60)
+                    print(f"🔖 Saving bookmark for prestation = {code} (first_run={i == 0})")
+                    print("=" * 60)
+                    bookmarks[code] = apply_logic(page, filter_data, nature_val=code, first_run=(i == 0))
+                print(f"\n📚 All bookmarks saved: {list(bookmarks.keys())}")
+            else:
+                bookmarks[None] = apply_logic(page, filter_data)
 
-                bookmark_url = apply_logic(page, filter_data)
+            def collect_and_process(bmk_url, label):
+                """Goes to a bookmark, paginates through all results, and processes new tenders."""
+                page.goto(bmk_url, wait_until="domcontentloaded", timeout=30000)
+                print(f"🔍 Collecting URLs for prestation {label}...")
 
-                all_tender_urls = []
+                prestation_urls = []
                 current_page_idx = 1
                 while True:
                     page.wait_for_load_state("domcontentloaded")
                     page.wait_for_selector("a:has-text('Référence')", timeout=7000)
-                    
+
                     offers = page.locator("a:has-text('Référence')").all()
-                    if not offers: break
-                    
+                    if not offers:
+                        break
+
                     found_on_page = 0
                     for o in offers:
                         href = o.get_attribute("href")
                         if href:
                             full_url = urljoin(URL, href)
                             if full_url not in existing_urls:
-                                all_tender_urls.append(full_url)
+                                prestation_urls.append(full_url)
                                 with open(PROCESSED_FILE, "a") as f:
                                     f.write(full_url + "\n")
                                 existing_urls.add(full_url)
                                 found_on_page += 1
-                    
+
                     print(f"📄 Page {current_page_idx}: Found {found_on_page} new tenders.")
-                    
+
                     next_page_val = current_page_idx + 1
                     next_btn = page.get_by_role("link", name=str(next_page_val), exact=True)
-                    
+
                     if next_btn.is_visible():
                         next_btn.click()
                         page.wait_for_load_state("networkidle")
@@ -1404,21 +1404,72 @@ def run_automation():
                         print("🏁 Reached last page of results.")
                         break
 
-                print(f"📑 Tenders collected for prestation {code}: {len(all_tender_urls)}")
+                print(f"📑 Tenders for prestation {label}: {len(prestation_urls)}")
+                process_tenders(prestation_urls)
+                return prestation_urls
 
-                # --- PHASE 2: FILL DEVIS ---
-                print(f"\n🚀 Processing tenders for prestation {code}...")
-                for tender_url in all_tender_urls:
-                    print(f"\n🔗 Processing: {tender_url}")
+            # --- PHASE 2: PROCESS URLS ---
+            # STRATEGY: fill only the tenders whose devis is still empty. Tenders that are
+            # already filled in (or expired) get skipped automatically inside fill_tender_form().
+            def process_tenders(urls):
+                for idx, tender_url in enumerate(urls, 1):
+                    print(f"🔗 Processing: {tender_url}")
                     try:
-                        page.goto(tender_url, wait_until="networkidle", timeout=60000)
-                        check_and_fill_devis(page, default_price="100.00")
-                    except Exception as err:
-                        print(f"❌ Error on URL {tender_url}: {err}")
+                        page.goto(tender_url, wait_until="domcontentloaded", timeout=30000)
+                        fill_tender_form(page)
+                        page.wait_for_timeout(500)
+                    except Exception as e:
+                        print(f"⚠️ Error on tender: {e}")
+                        continue
 
-        except Exception as e:
-            print(f"❌ Error during automation: {e}")
+            # --- PHASE 1: COLLECT + PROCESS, ONE PRESTATION AT A TIME ---
+            for code, bmk_url in bookmarks.items():
+                print("\n" + "=" * 60)
+                print(f"🔄 PROCESSING FILTER: prestation = {code}")
+                print("=" * 60)
+                collect_and_process(bmk_url, code)
 
+            # --- PHASE 3: MONITORING LOOP (Round-Robin, every {MONITOR_INTERVAL_SECONDS}s) ---
+            print(f"\n🕒 Entering monitoring mode. Cycling through {list(bookmarks.keys())} "
+                  f"and re-checking every {MONITOR_INTERVAL_SECONDS}s...")
+            while True:
+                try:
+                    for code, bmk_url in bookmarks.items():
+                        print(f"🔄 [{code}] Returning to bookmark and refreshing: "
+                              f"{datetime.now().strftime('%H:%M:%S')}")
+                        page.goto(bmk_url, wait_until="domcontentloaded", timeout=30000)
+                        page.wait_for_selector("a:has-text('Référence')", timeout=7000)
+
+                        new_batch = []
+                        offers = page.locator("a:has-text('Référence')").all()
+
+                        for o in offers:
+                            href = o.get_attribute("href")
+                            if href:
+                                full_url = urljoin(URL, href)
+                                if full_url not in existing_urls:
+                                    print(f"✨ New tender found: {full_url}")
+                                    new_batch.append(full_url)
+                                    with open(PROCESSED_FILE, "a") as f:
+                                        f.write(full_url + "\n")
+                                    existing_urls.add(full_url)
+
+                        if new_batch:
+                            print(f"🚀 Processing {len(new_batch)} newly discovered tenders "
+                                  f"for prestation {code}...")
+                            process_tenders(new_batch)
+                        else:
+                            print(f"😴 [{code}] No new tenders found.")
+
+                    print(f"⏳ Full round-robin cycle done. Waiting {MONITOR_INTERVAL_SECONDS}s...")
+                    page.wait_for_timeout(MONITOR_INTERVAL_SECONDS * 1000)
+
+                except Exception as e:
+                    print(f"⚠️ Monitoring error (retrying in 10s): {e}")
+                    page.wait_for_timeout(10000)
+
+        finally:
+            browser.close()
 
 if __name__ == "__main__":
     run_automation()
