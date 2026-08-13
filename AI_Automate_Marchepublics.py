@@ -38,8 +38,9 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 # --- TOKEN CONFIG ---
 CERT_TITLE = "Choisissez un certificat"
 PIN_TITLE = "Connexion au token"
-IMG_NAME = "Name.png"
-IMG_VALIDER = "Valider.png"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMG_NAME = os.path.join(SCRIPT_DIR, "Name.png")
+IMG_VALIDER = os.path.join(SCRIPT_DIR, "Valider.png")
 MY_PIN = "215093"
 
 # --- CALIBRATED SPEED SETTINGS ---
