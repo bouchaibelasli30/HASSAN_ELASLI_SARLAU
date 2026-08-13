@@ -31,7 +31,7 @@ if not os.path.isabs(PROCESSED_FILE):
         pass  # __file__ not defined (e.g. interactive session) — fall back to relative path
 
 # --- GEMINI API CONFIG ---
-GEMINI_API_KEY = "AQ.Ab8RN6L_THx_EQge9kV5lxFzRGFtCKy6985musRmfkB5QsDBUQ"
+GEMINI_API_KEY = "AIzaSyA7fltwoFPW-B0XlGDfoM54zdJ3zjxT-iQ"
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY # Set for potential sub-processes
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
