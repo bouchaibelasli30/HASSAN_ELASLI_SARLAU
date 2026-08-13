@@ -191,8 +191,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
             
             time.sleep(13)  # Respect RPM limit
             for chunk in gemini_client.models.generate_content_stream(
-             model="gemini-3-flash-preview",
-    
+                model="gemini-3-flash-preview",
                 contents=contents,
                 config=primary_config,
             ):
@@ -220,9 +219,9 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
             ]
             
             if any(err in error_msg for err in recoverable):
-                print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 2.5 Pro...")
+                print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 2.5 Flash...")
                 
-                # --- ATTEMPT 2: FALLBACK (Gemini 2.5 Pro) ---
+                # --- ATTEMPT 2: FALLBACK (Gemini 2.5 Flash) ---
                 try:
                     fallback_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=8192),
@@ -230,26 +229,26 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                     )
                     
                     full_response_text = "" # Reset buffer
-                time.sleep(13)  # Respect RPM limit
-            for chunk in gemini_client.models.generate_content_stream(
-                model="gemini-2.5-flash",
-                contents=contents,
-                config=fallback_config,
-            ):
-                full_response_text += (chunk.text or "")
-                        
+                    time.sleep(13)  # Respect RPM limit
+                    for chunk in gemini_client.models.generate_content_stream(
+                        model="gemini-2.5-flash",
+                        contents=contents,
+                        config=fallback_config,
+                    ):
+                        full_response_text += (chunk.text or "")
+                    
                     # Parse Fallback Response
-                match = re.search(r'\{.*\}', full_response_text, re.DOTALL)
-                if match:
+                    match = re.search(r'\{.*\}', full_response_text, re.DOTALL)
+                    if match:
                         result = json.loads(match.group(0))
-                else:
-                        print(f"⚠️ Gemini Pro also failed JSON: {full_response_text[:100]}...")
+                    else:
+                        print(f"⚠️ Gemini Flash also failed JSON: {full_response_text[:100]}...")
                         return None
                         
-        except Exception as e2:
-                    print(f"⚠️ Failover (Gemini 2.5 Pro) also crashed: {e2}")
+                except Exception as e2:
+                    print(f"⚠️ Failover (Gemini 2.5 Flash) also crashed: {e2}")
                     return None
-        else:
+            else:
                 # If it's a critical error (e.g. Auth), re-raise
                 print(f"⚠️ Critical Error: {e}")
                 raise e
