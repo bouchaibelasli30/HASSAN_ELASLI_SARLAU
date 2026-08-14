@@ -28,10 +28,12 @@ if not os.path.isabs(PROCESSED_FILE):
     try:
         PROCESSED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), PROCESSED_FILE)
     except NameError:
-        pass  # __file__ not defined (e.g. interactive session) — fall back to relative path
+        pass  # __file__ not defined (e.g. interactive session) — fall back to relative path 
 
 # --- GEMINI API CONFIG ---
-GEMINI_API_KEY = "AIzaSyA7fltwoFPW-B0XlGDfoM54zdJ3zjxT-iQ"
+from dotenv import load_dotenv
+load_dotenv()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY # Set for potential sub-processes
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
