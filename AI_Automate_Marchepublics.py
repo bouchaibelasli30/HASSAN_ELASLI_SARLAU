@@ -338,10 +338,9 @@ Quantité: "{quantity}"
         except Exception as e:
             # --- IMMEDIATE FAILOVER VALIDATION ---
             error_msg = str(e)
-            if "503" in error_msg or "429" in error_msg or "500" in error_msg or "504" in error_msg or "Overloaded" in error_msg:
-                if "503" in error_msg or "429" in error_msg or "500" in error_msg or "504" in error_msg or "Overloaded" in error_msg or "400" in error_msg or "INVALID_ARGUMENT" in error_msg:
+            if "503" in error_msg or "429" in error_msg or "500" in error_msg or "504" in error_msg or "Overloaded" in error_msg or "400" in error_msg or "INVALID_ARGUMENT" in error_msg:
                 print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 2.5 Pro...")
-                
+
                 # --- ATTEMPT 2: FALLBACK (Gemini 2.5 Pro) ---
                 fallback_config = types.GenerateContentConfig(
                     thinking_config=types.ThinkingConfig(thinking_budget=8192),
