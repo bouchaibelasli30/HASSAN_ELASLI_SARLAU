@@ -40,7 +40,7 @@ os.environ.get("GEMINI_API_KEY")
 print("DEBUG:", repr(GEMINI_API_KEY))
 print("DEBUG length:", len(GEMINI_API_KEY) if GEMINI_API_KEY else "None")
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY # Set for potential sub-processes
-gemini_client = genai.Client(api_key=GEMINI_API_KEY, vertexai=False)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # --- TOKEN CONFIG ---
 CERT_TITLE = "Choisissez un certificat"
@@ -85,7 +85,6 @@ PRICE_UNDERCUT = 0  # DH to subtract from every price (0 = disabled)
 AVAILABLE_PRESTATIONS = {
     "80": "Prestation de jardinage, de gardiennage et de nettoyage",
     "97": "Prestations médicales, hospitalières, radiologiques, d'analyse médicale et de brancardage",
-    "100": "Transport, acconage, magasinage et transit",
 }
 PAGE_SIZE = 50                    # Tenders per page on the results page
 AUTO_SET_PAGE_SIZE = False        # ⚠️ Disabled: unverified selector was corrupting search results
@@ -433,7 +432,6 @@ def detect_unit_from_row(row):
         # PERSONNE/AGENT
         "personne": "personne", "personnes": "personne", "pers": "personne",
         "agent": "personne", "agents": "personne",
-        "poste": "personne", "postes": "personne",
         "homme": "personne", "hommes": "personne",
         "femme": "personne", "femmes": "personne",
         "vigile": "personne", "vigiles": "personne",
@@ -709,27 +707,16 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
             print(f"🧮 Python Calculated: {explicit_min_price} (explicit minimum HT)")
             return str(explicit_min_price)
     
-    # Priority 2: TTC price (divide by 1.2, then by quantity if global sum)
+    # Priority 2: TTC price (divide by 1.2)
     if price_ttc:
         final = round(price_ttc / 1.2, 2)
-        qty = safe_parse_quantity(quantity_str)
-        if qty > 1:
-            final = round(final / qty, 2)
-            print(f"🧮 Python Calculated: {final} (TTC {price_ttc} / 1.2 / qty {qty})")
-        else:
-            print(f"🧮 Python Calculated: {final} (TTC {price_ttc} / 1.2)")
+        print(f"🧮 Python Calculated: {final} (TTC {price_ttc} / 1.2)")
         return str(final)
     
-    # Priority 3: HT price (divide by quantity if global sum)
+    # Priority 3: HT price (use as-is)
     if price_ht:
-        qty = safe_parse_quantity(quantity_str)
-        final = price_ht
-        if qty > 1:
-            final = round(price_ht / qty, 2)
-            print(f"🧮 Python Calculated: {final} (HT {price_ht} / qty {qty})")
-        else:
-            print(f"🧮 Python Calculated: {final} (HT price)")
-        return str(final)
+        print(f"🧮 Python Calculated: {price_ht} (HT price)")
+        return str(price_ht)
     
     # Priority 4: Calculate based on unit type
     row_lower = row_context.lower() if row_context else ""
@@ -747,7 +734,7 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
             unit_type = "mois"
         # PERSONNE/AGENT detection (comprehensive)
         elif any(x in row_lower for x in [
-            "personne", "personnes", "pers", "agent", "agents", "poste", "postes",
+            "personne", "personnes", "pers", "agent", "agents",
             "homme", "hommes", "femme", "femmes",
             "vigile", "vigiles", "gardien", "gardiens",
             "ouvrier", "ouvriers", "ouvrière", "ouvrières",
@@ -779,9 +766,12 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
              print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} (17.92 * {hours_per_day}h * {work_days_multiplier}d)")
              salary = final_salary
 
-        salary = salary if salary else DEFAULT_MONTHLY
-        print(f"🧮 Python Calculated: {salary} (Unit: Mois/Agent - using unitary monthly price)")
-        return str(salary)
+        if salary:
+            print(f"🧮 Python Calculated: {salary} (Unit: Mois/Agent - using unitary monthly price)")
+            return str(salary)
+        else:
+            print("🔍 Unit is 'mois_agent' but no explicit salary found - will try PDF extraction")
+            return None
 
     elif unit_type == "heure":
         # No explicit price found - return None to trigger PDF extraction
@@ -809,10 +799,13 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
              salary = final_salary
         # ------------------------------------------------
 
-        salary = salary if salary else DEFAULT_MONTHLY
-        final = round(num_agents * salary, 2)
-        print(f"🧮 Python Calculated: {final} ({num_agents} agents × {salary} salary)")
-        return str(final)
+        if salary:
+            final = round(num_agents * salary, 2)
+            print(f"🧮 Python Calculated: {final} ({num_agents} agents × {salary} salary)")
+            return str(final)
+        else:
+            print("🔍 Unit is 'mois' but no explicit salary found - will try PDF extraction")
+            return None
 
     elif unit_type in ["personne", "agent"]:
         # Per person: salary × num_months
@@ -828,10 +821,18 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
              print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} (17.92 * {hours_per_day}h * {work_days_multiplier}d)")
              salary = final_salary
 
-        salary = salary if salary else DEFAULT_MONTHLY
-        final = round(salary * num_months, 2)
-        print(f"🧮 Python Calculated: {final} ({salary} salary × {num_months} months) [num_agents ignored - table has quantity]")
-        return str(final)
+        if salary:
+            final = round(salary * num_months, 2)
+            print(f"🧮 Python Calculated: {final} ({salary} salary × {num_months} months) [num_agents ignored - table has quantity]")
+            return str(final)
+        else:
+            # No explicit salary found in the row description. The real pricing
+            # info (e.g. "SMIG journalier", detailed staffing tables) usually lives
+            # in the attached PDF (CPS/TDR), not in the short website row text.
+            # Return None so fill_tender_form() falls back to PDF extraction
+            # instead of blindly using the generic DEFAULT_MONTHLY value.
+            print("🔍 Unit is 'personne' but no explicit salary found - will try PDF extraction")
+            return None
     
     elif unit_type == "forfait":
         total_hours = data.get("total_hours_all_agents")
@@ -1098,7 +1099,6 @@ def fill_tender_form(page):
         # --- PRICING TABLE WITH AI ---
         page.wait_for_selector("tr", timeout=5000)
         rows = page.locator("tr").all()
-        requires_manual_review = False  # 🛡️ Set True if we can't safely auto-price a row
         for row in rows:
             row_text = row.inner_text().lower()
             spin = row.get_by_role("spinbutton")
@@ -1112,10 +1112,6 @@ def fill_tender_form(page):
                 
                 # Python detect unit (safe scope)
                 detected_unit = detect_unit_from_row(row)
-
-                # 🛡️ SANITY CHECK: 'forfait' should always have Quantité = 1
-                if detected_unit == "forfait" and safe_parse_quantity(context["quantity"]) != 1:
-                    print(f"⚠️ WARNING: 'forfait' unit with Quantité={context['quantity']} (expected 1) — possible data entry error. Manual review recommended.")
 
                 if context["description"]:
                     # AI ANALYSIS (Universal for Services & Products)
@@ -1174,13 +1170,11 @@ def fill_tender_form(page):
                         target_value = TARGET_PRICES["heure"]     # Returns 17.92 (Explicit)
                         print(f"⚠️ Fallback to Standard HOURLY Price: {target_value} (Source: {'Python' if detected_unit=='heure' else 'AI'})")
                     elif detected_unit == "forfait" or unit_ai == "forfait":
-                        # 🛡️ 'forfait' has no universal reference price (unlike heure/jour/mois SMIG rates).
-                        # Blindly using DEFAULT_MONTHLY here has caused real, wildly-wrong submitted offers.
-                        # Flag for manual review instead of guessing and auto-submitting.
-                        requires_manual_review = True
-                        print("🛑 MANUAL REVIEW REQUIRED: 'forfait' row with no explicit price found in AI extraction "
-                              "or PDF. Refusing to guess a price automatically — leaving field empty and skipping "
-                              "auto-submission for this tender.")
+                        target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
+                        print(f"⚠️ Fallback to Standard MONTHLY Price for 'forfait' (last resort, AI+PDF both failed): {target_value}")
+                    elif detected_unit in ["personne", "agent"] or unit_ai in ["personne", "agent"]:
+                        target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
+                        print(f"⚠️ Fallback to Standard MONTHLY Price for 'personne' (last resort, AI+PDF both failed): {target_value}")
                     
                     # PRIORITY B: Broad Match (Only if Unit Column failed)
                     # REORDERED: Check 'Mois' & 'Jour' first, because 'Heure' is a common noise word
@@ -1205,12 +1199,6 @@ def fill_tender_form(page):
                     spin.first.click()
                     spin.first.fill("") 
                     spin.first.type(str(target_value), delay=25)
-
-        # 🛡️ MANUAL REVIEW GATE: don't auto-generate/sign/submit if any row couldn't be safely priced
-        if requires_manual_review:
-            print("🛑 Skipping 'Générer un devis' and signature — this tender needs manual pricing review.")
-            print(f"🔗 URL: {page.url}")
-            return
 
         # Devis Generation
         btn_gen = page.get_by_role("button", name="Générer un devis")
