@@ -12,6 +12,9 @@ import time
 from io import BytesIO
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def safe_math_eval(formula_str):
     """Grand-Master Safe Evaluator (Standard 64-bit Precision)"""
@@ -37,7 +40,7 @@ def safe_math_eval(formula_str):
 # --- CONFIGURATION ---
 DOWNLOAD_PATH = r"C:\Users\hp\Downloads\MarchePublics"
 LIBREOFFICE_PATH = r"C:\Program Files\LibreOffice\program\soffice.exe"
-GEMINI_API_KEY = "AQ.Ab8RN6L_THx_EQge9kV555lxFzRGFtCKy6985musRmfkB5QsDBUQ"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Ensure download directory exists
