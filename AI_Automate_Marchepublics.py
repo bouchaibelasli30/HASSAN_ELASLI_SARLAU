@@ -179,16 +179,16 @@ If the CPS/description contains a staffing table with MULTIPLE SHIFTS
 has_complex_shift_table=true and extract EVERY row into shift_periods as:
 
 "shift_periods": [
-    {"period_days": 60, "shifts": [
-        {"agents": 13, "hours_per_shift": 8},
-        {"agents": 8, "hours_per_shift": 8},
-        {"agents": 8, "hours_per_shift": 8}
-    ]},
-    {"period_days": 28, "shifts": [
-        {"agents": 7, "hours_per_shift": 8},
-        {"agents": 7, "hours_per_shift": 8},
-        {"agents": 7, "hours_per_shift": 8}
-    ]}
+    {{"period_days": 60, "shifts": [
+        {{"agents": 13, "hours_per_shift": 8}},
+        {{"agents": 8, "hours_per_shift": 8}},
+        {{"agents": 8, "hours_per_shift": 8}}
+    ]}},
+    {{"period_days": 28, "shifts": [
+        {{"agents": 7, "hours_per_shift": 8}},
+        {{"agents": 7, "hours_per_shift": 8}},
+        {{"agents": 7, "hours_per_shift": 8}}
+    ]}}
 ]
 
 DO NOT try to compute a single total_hours number yourself — Python will 
