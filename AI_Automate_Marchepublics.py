@@ -969,7 +969,13 @@ def run_perfect_flow(timeout=90):
     name_pos = None
     while not name_pos:
         # HIGH-DPI FIX: Removed region=region to allow full screen search
-        name_pos = pyautogui.locateCenterOnScreen(IMG_NAME, confidence=0.8, grayscale=True)
+        # 🛡️ opencv-backed pyautogui raises ImageNotFoundException instead of
+        # returning None when the image isn't found yet - catch it so this
+        # loop keeps retrying (like it did before opencv was installed).
+        try:
+            name_pos = pyautogui.locateCenterOnScreen(IMG_NAME, confidence=0.8, grayscale=True)
+        except pyautogui.ImageNotFoundException:
+            name_pos = None
         if name_pos:
             pyautogui.click(name_pos)
             break
@@ -979,7 +985,10 @@ def run_perfect_flow(timeout=90):
     valider_pos = None
     while not valider_pos:
         # HIGH-DPI FIX: Removed region=region to allow full screen search
-        valider_pos = pyautogui.locateCenterOnScreen(IMG_VALIDER, confidence=0.8, grayscale=True)
+        try:
+            valider_pos = pyautogui.locateCenterOnScreen(IMG_VALIDER, confidence=0.8, grayscale=True)
+        except pyautogui.ImageNotFoundException:
+            valider_pos = None
         if valider_pos:
             pyautogui.click(valider_pos)
             break
