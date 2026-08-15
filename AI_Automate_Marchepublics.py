@@ -774,7 +774,15 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         return str(final)
     
     elif unit_type == "forfait":
-    total_hours = data.get("total_hours_all_agents")
+        total_hours = data.get("total_hours_all_agents")
+
+        if total_hours and total_hours > 0:
+            final = round(total_hours * DEFAULT_HOURLY, 2)
+            return str(final)
+        else:
+            salary = salary_per_agent if salary_per_agent else DEFAULT_MONTHLY
+            final = round(num_agents * salary * num_months, 2)
+            return str(final)
     
     if total_hours and total_hours > 0:
         final = round(total_hours * DEFAULT_HOURLY, 2)
