@@ -774,10 +774,14 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         return str(final)
     
     elif unit_type == "forfait":
-        # Forfait: typically total price, use agents × monthly as default
+    total_hours = data.get("total_hours_all_agents")
+    
+    if total_hours and total_hours > 0:
+        final = round(total_hours * DEFAULT_HOURLY, 2)
+        return str(final)
+    else:
         salary = salary_per_agent if salary_per_agent else DEFAULT_MONTHLY
         final = round(num_agents * salary * num_months, 2)
-        print(f"🧮 Python Calculated: {final} ({num_agents} agents × {salary} × {num_months} months)")
         return str(final)
     
     # FORMULA UNIT: "Nombre d'agents * X mois" or "Agent/Mois" or similar combinations
