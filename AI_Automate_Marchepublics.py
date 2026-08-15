@@ -85,6 +85,7 @@ PRICE_UNDERCUT = 0  # DH to subtract from every price (0 = disabled)
 AVAILABLE_PRESTATIONS = {
     "80": "Prestation de jardinage, de gardiennage et de nettoyage",
     "97": "Prestations médicales, hospitalières, radiologiques, d'analyse médicale et de brancardage",
+    "100": "Transport, acconage, magasinage et transit",
 }
 PAGE_SIZE = 50                    # Tenders per page on the results page
 AUTO_SET_PAGE_SIZE = False        # ⚠️ Disabled: unverified selector was corrupting search results
