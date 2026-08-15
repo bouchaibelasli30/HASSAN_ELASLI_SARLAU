@@ -826,10 +826,17 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         if total_hours and total_hours > 0:
             final = round(total_hours * DEFAULT_HOURLY, 2)
             return str(final)
-        else:
-            salary = salary_per_agent if salary_per_agent else DEFAULT_MONTHLY
-            final = round(num_agents * salary * num_months, 2)
+        elif salary_per_agent:
+            final = round(num_agents * salary_per_agent * num_months, 2)
             return str(final)
+        else:
+            # No explicit price/salary found in the row description.
+            # The real pricing table (e.g. multi-shift staffing table) usually
+            # lives in the attached PDF (CPS), not in the short website row text.
+            # Return None so fill_tender_form() falls back to PDF extraction
+            # instead of blindly using the generic DEFAULT_MONTHLY value.
+            print("🔍 Unit is 'forfait' but no explicit price found - will try PDF extraction")
+            return None
 
     # FORMULA UNIT: "Nombre d'agents * X mois" or "Agent/Mois" or similar combinations
     elif ("agent" in unit_type.lower() and "mois" in unit_type.lower()) or \
@@ -1148,6 +1155,9 @@ def fill_tender_form(page):
                     elif detected_unit == "heure" or unit_ai == "heure":
                         target_value = TARGET_PRICES["heure"]     # Returns 17.92 (Explicit)
                         print(f"⚠️ Fallback to Standard HOURLY Price: {target_value} (Source: {'Python' if detected_unit=='heure' else 'AI'})")
+                    elif detected_unit == "forfait" or unit_ai == "forfait":
+                        target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
+                        print(f"⚠️ Fallback to Standard MONTHLY Price for 'forfait' (last resort, AI+PDF both failed): {target_value}")
                     
                     # PRIORITY B: Broad Match (Only if Unit Column failed)
                     # REORDERED: Check 'Mois' & 'Jour' first, because 'Heure' is a common noise word
