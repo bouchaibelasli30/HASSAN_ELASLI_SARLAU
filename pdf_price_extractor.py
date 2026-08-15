@@ -38,7 +38,7 @@ def safe_math_eval(formula_str):
 DOWNLOAD_PATH = r"C:\Users\hp\Downloads\MarchePublics"
 LIBREOFFICE_PATH = r"C:\Program Files\LibreOffice\program\soffice.exe"
 GEMINI_API_KEY = "AQ.Ab8RN6L_THx_EQge9kV5lxFzRGFtCKy6985musRmfkB5QsDBUQ"
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY, vertexai=False)
 
 # Ensure download directory exists
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
