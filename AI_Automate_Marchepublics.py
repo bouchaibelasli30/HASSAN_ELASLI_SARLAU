@@ -133,7 +133,9 @@ DO NOT CALCULATE. DO NOT INVENT. Return ONLY valid JSON.
     "is_7_days_work": "boolean",
     "days_per_week": "integer",
     "price_is_for_how_many_months": "integer",
-    "ai_estimated_price": "number|null"
+    "ai_estimated_price": "number|null",
+    "has_complex_shift_table": "boolean",
+    "shift_periods": "array|null"
 }}
 
 [COGNITIVE_PROCESS]
@@ -167,6 +169,34 @@ The website table has a QUANTITY column that ALREADY contains:
 - mois: num_agents × salary → NEEDS num_agents
 - heure: hourly rate only → default 17.92
 - jour: daily rate only → default 143.36 (or hourly min × hours)
+
+═══════════════════════════════════════════════════════════════════════
+CRITICAL: COMPLEX MULTI-SHIFT STAFFING TABLES (Gardiennage/Sécurité)
+═══════════════════════════════════════════════════════════════════════
+If the CPS/description contains a staffing table with MULTIPLE SHIFTS 
+(e.g. "07h-15h", "15h-23h", "23h-07h") AND possibly MULTIPLE PERIOD TYPES 
+(e.g. "jours ouvrables" vs "jours fériés/weekend"), set 
+has_complex_shift_table=true and extract EVERY row into shift_periods as:
+
+"shift_periods": [
+    {"period_days": 60, "shifts": [
+        {"agents": 13, "hours_per_shift": 8},
+        {"agents": 8, "hours_per_shift": 8},
+        {"agents": 8, "hours_per_shift": 8}
+    ]},
+    {"period_days": 28, "shifts": [
+        {"agents": 7, "hours_per_shift": 8},
+        {"agents": 7, "hours_per_shift": 8},
+        {"agents": 7, "hours_per_shift": 8}
+    ]}
+]
+
+DO NOT try to compute a single total_hours number yourself — Python will 
+calculate the exact total from this structured breakdown. Extract the 
+RAW numbers from the table exactly as shown (agent counts, hours per 
+shift, number of days per period type).
+If no such table exists, set has_complex_shift_table=false and 
+shift_periods=null.
 
 ═══════════════════════════════════════════════════════════════════════
 EXTRACTION RULES (12 fields)
@@ -492,7 +522,22 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
     """
     if not data:
         return None
-    
+
+    # --- NEW: COMPLEX MULTI-SHIFT TABLE LOGIC (Gardiennage/Sécurité) ---
+    if data.get("has_complex_shift_table") and data.get("shift_periods"):
+        total_hours = 0
+        for period in data["shift_periods"]:
+            period_days = period.get("period_days", 0) or 0
+            for shift in period.get("shifts", []):
+                agents = shift.get("agents", 0) or 0
+                hours = shift.get("hours_per_shift", 8) or 8
+                total_hours += agents * hours * period_days
+        if total_hours > 0:
+            final = round(total_hours * 17.92, 2)
+            print(f"🧮 Complex Shift Table: {total_hours}h total × 17.92 DH = {final} DH HT")
+            return str(final)
+    # --- END NEW LOGIC ---
+
     # Default values
     DEFAULT_HOURLY = 17.92
     DEFAULT_DAILY = 143.36
