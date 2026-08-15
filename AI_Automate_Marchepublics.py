@@ -40,7 +40,7 @@ os.environ.get("GEMINI_API_KEY")
 print("DEBUG:", repr(GEMINI_API_KEY))
 print("DEBUG length:", len(GEMINI_API_KEY) if GEMINI_API_KEY else "None")
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY # Set for potential sub-processes
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY, vertexai=False)
 
 # --- TOKEN CONFIG ---
 CERT_TITLE = "Choisissez un certificat"
