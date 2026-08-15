@@ -338,7 +338,9 @@ Quantité: "{quantity}"
         except Exception as e:
             # --- IMMEDIATE FAILOVER VALIDATION ---
             error_msg = str(e)
-            if "503" in error_msg or "429" in error_msg or "500" in error_msg or "504" in error_msg or "Overloaded" in error_msg or "400" in error_msg or "INVALID_ARGUMENT" in error_msg:
+            if ("503" in error_msg or "429" in error_msg or "500" in error_msg
+                    or "504" in error_msg or "Overloaded" in error_msg
+                    or "400" in error_msg or "INVALID_ARGUMENT" in error_msg):
                 print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 2.5 Pro...")
 
                 # --- ATTEMPT 2: FALLBACK (Gemini 2.5 Pro) ---
@@ -346,7 +348,7 @@ Quantité: "{quantity}"
                     thinking_config=types.ThinkingConfig(thinking_budget=8192),
                     response_mime_type="application/json",
                 )
-                
+
                 time.sleep(13)  # Respect RPM limit before fallback call
                 for chunk in gemini_client.models.generate_content_stream(
                     model="gemini-2.5-flash",
@@ -776,8 +778,6 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
     elif unit_type == "forfait":
         total_hours = data.get("total_hours_all_agents")
 
-        elif unit_type == "forfait":
-        total_hours = data.get("total_hours_all_agents")
         if total_hours and total_hours > 0:
             final = round(total_hours * DEFAULT_HOURLY, 2)
             return str(final)
@@ -786,18 +786,6 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
             final = round(num_agents * salary * num_months, 2)
             return str(final)
 
-    # FORMULA UNIT: "Nombre d'agents * X mois" or "Agent/Mois" or similar combinations
-    elif ("agent" in unit_type.lower() and "mois" in unit_type.lower()) or \
-         ("nombre" in unit_type.lower() and "mois" in unit_type.lower()):
-    
-    if total_hours and total_hours > 0:
-        final = round(total_hours * DEFAULT_HOURLY, 2)
-        return str(final)
-    else:
-        salary = salary_per_agent if salary_per_agent else DEFAULT_MONTHLY
-        final = round(num_agents * salary * num_months, 2)
-        return str(final)
-    
     # FORMULA UNIT: "Nombre d'agents * X mois" or "Agent/Mois" or similar combinations
     elif ("agent" in unit_type.lower() and "mois" in unit_type.lower()) or \
          ("nombre" in unit_type.lower() and "mois" in unit_type.lower()):
