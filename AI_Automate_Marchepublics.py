@@ -6,6 +6,8 @@ from urllib.parse import urljoin
 import pyautogui
 import pygetwindow as gw
 import time
+import threading
+import queue
 from pywinauto import Application, timings, findwindows
 from pdf_price_extractor import get_price_from_zip   # PDF EXTRACTION MODULE
 from google import genai
@@ -1038,6 +1040,30 @@ def safe_handle_dialog(dialog):
     except Exception:
         pass
 
+def input_with_timeout(prompt, timeout=6, default="oui"):
+    """
+    Like input(), but auto-confirms with `default` if the user doesn't
+    respond within `timeout` seconds. Gives a human a chance to review/cancel
+    without blocking the automation indefinitely.
+    """
+    print(prompt, end="", flush=True)
+    answer_queue = queue.Queue()
+
+    def reader():
+        try:
+            answer_queue.put(input())
+        except Exception:
+            answer_queue.put(None)
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    try:
+        result = answer_queue.get(timeout=timeout)
+        return result if result is not None else default
+    except queue.Empty:
+        print(f"\n⏱️ Pas de réponse en {timeout}s — confirmation automatique ('{default}').")
+        return default
+
 # ---------------- DESKTOP AUTOMATION (SIGNING) ----------------
 def run_perfect_flow(timeout=90):
     print(f"🚀 Monitoring system for Java windows (Timeout: {timeout}s)...")
@@ -1353,8 +1379,11 @@ def fill_tender_form(page):
                 else:
                     print("  (aucune ligne de prix détectée à afficher — vérifier le devis manuellement)")
                 print("=" * 60)
-                answer = input("Taper 'oui' pour signer et soumettre cette offre, "
-                                "autre chose pour PASSER ce tender: ").strip().lower()
+                answer = input_with_timeout(
+                    "Taper 'oui' pour signer et soumettre cette offre, "
+                    "autre chose pour PASSER ce tender (auto-'oui' dans 6s): ",
+                    timeout=6, default="oui"
+                ).strip().lower()
                 if answer not in ("oui", "o", "yes", "y"):
                     print("⏭️ Soumission annulée par l'utilisateur pour ce tender.")
                     return
