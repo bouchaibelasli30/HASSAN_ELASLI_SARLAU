@@ -10,8 +10,15 @@ import subprocess
 import tempfile
 import time
 from io import BytesIO
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+
+# 🔑 Load .env independently — this module can be exec'd by the launcher
+# BEFORE the main script runs its own load_dotenv(), so we cannot rely on
+# that call having already happened. load_dotenv() is safe to call multiple
+# times (it's a no-op if variables are already set / .env already read).
+load_dotenv()
 
 def safe_math_eval(formula_str):
     """Grand-Master Safe Evaluator (Standard 64-bit Precision)"""
