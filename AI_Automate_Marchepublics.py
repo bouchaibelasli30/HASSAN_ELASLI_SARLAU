@@ -78,6 +78,12 @@ TARGET_PRICES = {
 # --- SETTINGS ---
 USE_FILTER = True
 
+# 🛡️ SAFETY: require a manual confirmation before the bot signs/submits a
+# legally-binding bid. Set to False only once you fully trust the pricing
+# logic on every unit type you use — recommended to keep True given the
+# known edge cases around "jour" + multiple agents.
+REQUIRE_MANUAL_CONFIRMATION_BEFORE_SIGNING = True
+
 # --- COMPETITIVE PRICING ---
 PRICE_UNDERCUT = 0  # DH to subtract from every price (0 = disabled)
 
@@ -169,7 +175,7 @@ The website table has a QUANTITY column that ALREADY contains:
 - personne: salary × num_months → NEEDS num_months
 - mois: num_agents × salary → NEEDS num_agents
 - heure: hourly rate only → default 17.92
-- jour: daily rate only → default 143.36 (or hourly min × hours)
+- jour: daily rate × num_agents (if several agents work simultaneously each day) → default 143.36
 
 ═══════════════════════════════════════════════════════════════════════
 CRITICAL: COMPLEX MULTI-SHIFT STAFFING TABLES (Gardiennage/Sécurité)
@@ -229,6 +235,11 @@ FORMULA UNITS (When Unité contains expressions):
    - Patterns: "3 agents", "cinq vigiles", "2 femmes de ménage"
    - French numbers: un=1, deux=2, trois=3, quatre=4, cinq=5, six=6, sept=7, huit=8, neuf=9, dix=10
    - Default: 1 (if not mentioned)
+   - ⚠️ IMPORTANT for unit_type="jour": this field is NOT informational-only.
+     If several agents (e.g. "18 vigiles") must be present SIMULTANEOUSLY each
+     day (e.g. 24h/24, 7j/7 guarding), the table's "Quantité" column for
+     unit="jour" contains ONLY the number of days — NOT agent-days. Python
+     needs an accurate num_agents here to multiply the daily rate correctly.
    - Note: When unit_type="personne", this is informational only (table has quantity)
 
 3. salary_per_agent: Monthly salary if mentioned
@@ -298,6 +309,11 @@ INPUT: "Toute offre inférieure à 24 dh/heure sera écartée. 8H par jour, 60 j
 OUTPUT: {{"unit_type": "jour", "num_agents": 1, "salary_per_agent": null, "price_ttc": null, "price_ht": null, "num_months": 1, "explicit_min_price": 24, "min_price_is_ttc": false, "min_price_is_hourly": true, "hours_per_day": 8}}
 → Python: 24 × 8 = 192 (hourly→daily) | Website: 192 × 60 = 11,520
 
+Example 1b (unit=jour, quantity=60 days, MULTIPLE simultaneous agents):
+INPUT: "18 vigiles assurant la prestation de gardiennage 24 heures/24 et 7 jours/7. Respect du SMIG." | ROW: "Jour"
+OUTPUT: {{"unit_type": "jour", "num_agents": 18, "salary_per_agent": null, "price_ttc": null, "price_ht": null, "num_months": 1, "explicit_min_price": null, "min_price_is_ttc": false, "min_price_is_hourly": false, "hours_per_day": 8, "is_7_days_work": true}}
+→ Python: 143.36 × 18 agents = 2,580.48 (daily rate × agents) | Website: 2,580.48 × 60 = 154,828.80
+
 Example 2 (unit=mois, quantity=6 months):
 INPUT: "3 agents de sécurité, salaire 4000 DH, du 01/01/2026 au 30/06/2026" | ROW: "Mois"
 OUTPUT: {{"unit_type": "mois", "num_agents": 3, "salary_per_agent": 4000, "price_ttc": null, "price_ht": null, "num_months": 6, "explicit_min_price": null, "min_price_is_ttc": false, "min_price_is_hourly": false, "hours_per_day": 8}}
@@ -314,12 +330,12 @@ OUTPUT: {{"unit_type": "heure", "num_agents": 1, "salary_per_agent": null, "pric
 → Python: 17.92 (default hourly) | Website: 17.92 × 480 = 8,601.60
 
 Example 5 (unit=heure, quantity=13224 hours)(EXPLICIT PRICE "est égale de"):
-INPUT: "NB : le prix d’une heure de travail respectant le SMIG est égale de 22,94 dh" | ROW: "Heure"
+INPUT: "NB : le prix d'une heure de travail respectant le SMIG est égale de 22,94 dh" | ROW: "Heure"
 OUTPUT: {{"unit_type": "heure", "num_agents": 1, "salary_per_agent": null, "price_ttc": null, "price_ht": null, "num_months": 1, "explicit_min_price": 22.94, "min_price_is_ttc": false, "min_price_is_hourly": true, "hours_per_day": 8}}
 → Python: 22.94 (Exact extraction) | Website: 22.94 × 13224 = 299,977.60
 
 Example 6 (unit=jour, quantity=480 days)(EXPLICIT HOURLY PRICE needing conversion to DAY):
-INPUT: "NB : le prix d’une heure de travail respectant le SMIG est égale de 22,94 dh" | ROW: "Jour"
+INPUT: "NB : le prix d'une heure de travail respectant le SMIG est égale de 22,94 dh" | ROW: "Jour"
 OUTPUT: {{"unit_type": "jour", "num_agents": 1, "salary_per_agent": null, "price_ttc": null, "price_ht": null, "num_months": 1, "explicit_min_price": 22.94, "min_price_is_ttc": false, "min_price_is_hourly": true, "hours_per_day": 8}}
 → Python: 22.94 × 8 = 183.52 (Hourly 22.94 converted to Daily by Python) | Website: 183.52 × 480 = 88,089.60
 
@@ -516,6 +532,87 @@ def safe_parse_quantity(q_str):
     except:
         return 0
 
+
+# ================================================================
+# 🩹 PATCH: dedicated logic for unit_type == "jour" with multiple
+# simultaneous agents (e.g. "18 vigiles... 24h/24 et 7j/7").
+#
+# BUG FIXED: the website's "Quantité" column for unit="jour" holds
+# ONLY the number of days (e.g. 60), never agent-days. The previous
+# logic returned a bare per-agent daily rate (143.36) even when many
+# agents (18) were required simultaneously each day, so the website's
+# own multiplication (rate × 60 days) silently produced a bid ~18x
+# too low (8,601.60 DH instead of 154,828.80 DH for a 60-day, 18-agent
+# 24/7 guarding contract).
+# ================================================================
+DEFAULT_DAILY_PATCH = TARGET_PRICES["jour"]  # 143.36
+
+
+def calculate_final_price_jour_patch(data, row_context, quantity_str=None):
+    """
+    Dedicated calculation for unit_type == "jour".
+    Multiplies the per-agent daily rate by num_agents whenever several
+    agents must be present simultaneously each day, since the site's
+    Quantité column (for this unit) only ever represents days.
+    """
+    num_agents = data.get("num_agents") or 1
+    explicit_min_price = data.get("explicit_min_price")
+    min_price_is_ttc = data.get("min_price_is_ttc", False)
+    min_price_is_hourly = data.get("min_price_is_hourly", False)
+    hours_per_day = data.get("hours_per_day", 8) or 8
+    qty = safe_parse_quantity(quantity_str)
+
+    # ---------- CAS A: prix minimum explicite trouvé dans le texte ----------
+    if explicit_min_price:
+        final = float(explicit_min_price)
+        original_price = final
+
+        if min_price_is_ttc:
+            final = round(final / 1.2, 2)
+            print(f"🧮 TTC Conversion: {explicit_min_price} / 1.2 = {final} HT")
+
+        # A1: prix minimum HORAIRE -> convertir en journalier, puis × agents
+        if min_price_is_hourly:
+            per_agent_daily = round(final * hours_per_day, 2)
+            if num_agents > 1:
+                final = round(per_agent_daily * num_agents, 2)
+                print(f"🧮 Jour (hourly→daily×agents): {explicit_min_price}/h × {hours_per_day}h × "
+                      f"{num_agents} agents = {final}")
+            else:
+                final = per_agent_daily
+                print(f"🧮 Jour (hourly→daily): {explicit_min_price}/h × {hours_per_day}h = {final}")
+            return str(final)
+
+        # A2: prix minimum déjà GLOBAL (toute l'équipe / toute la durée)
+        #     -> diviser par la quantité (jours) du site
+        if original_price > 300 and qty > 0:
+            final = round(final / qty, 2)
+            print(f"🧮 Jour: prix global {original_price} / quantité {qty} jours = {final}")
+            return str(final)
+
+        # A3: prix minimum = taux PAR AGENT PAR JOUR (cas standard, ex: 143.36)
+        if num_agents > 1:
+            final = round(final * num_agents, 2)
+            print(f"🧮 Jour (taux/agent/jour × agents): {explicit_min_price} × {num_agents} agents = {final}")
+            return str(final)
+
+        print(f"🧮 Jour: taux explicite unitaire {final} (1 seul agent)")
+        return str(final)
+
+    # ---------- CAS B: aucun prix minimum explicite ----------
+    if num_agents > 1:
+        final = round(DEFAULT_DAILY_PATCH * num_agents, 2)
+        print(f"🧮 Jour (fallback SMIG × agents): {DEFAULT_DAILY_PATCH} × {num_agents} agents = {final} "
+              f"— Quantité site = jours seulement, pas agent-jours")
+        return str(final)
+
+    print("🔍 Unit is 'jour' but no explicit price found (1 agent) - will try PDF extraction")
+    return None
+# ================================================================
+# 🩹 END PATCH
+# ================================================================
+
+
 def calculate_final_price(data, row_context, python_detected_unit=None, quantity_str=None):
     """
     Python function that calculates the final price based on extracted AI data.
@@ -549,6 +646,12 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
     if python_detected_unit and python_detected_unit != "unknown":
         unit_type = python_detected_unit
         print(f"🔹 Python Override: Forced unit type to '{unit_type}' (from table)")
+
+    # 🩹 PATCH HOOK: "jour" gets its own dedicated logic (multi-agent aware),
+    # intercepted here BEFORE any of the generic branches below run.
+    if unit_type == "jour":
+        return calculate_final_price_jour_patch(data, row_context, quantity_str)
+
     num_agents = data.get("num_agents") or 1
     salary_per_agent = data.get("salary_per_agent")
     price_ttc = data.get("price_ttc")
@@ -640,26 +743,20 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
                 
                 return str(final)
 
-        # CASE 2: Heure/Jour (Divide by Table Quantity)
-        elif (unit_type == "heure" and original_price > 50) or (unit_type == "jour" and original_price > 300):
+        # CASE 2: Heure (Divide by Table Quantity) — "jour" handled separately above
+        elif unit_type == "heure" and original_price > 50:
             if qty > 0:
-                 print(f"🧮 Master Logic ({unit_type}): Detected High Price {explicit_min_price}. Dividing by Quantity: {qty}")
+                 print(f"🧮 Master Logic (heure): Detected High Price {explicit_min_price}. Dividing by Quantity: {qty}")
                  
-                 # TTC already handled by Global Rule at Priority 1A (line 469)
+                 # TTC already handled by Global Rule at Priority 1A
                  
                  # Divide by Quantity
                  final = round(final / qty, 2)
                  print(f"   -> Final Unit Price: {final}")
                  return str(final)
-        
-        # Handle hourly-to-daily conversion (if min is hourly but unit is jour)
-        if min_price_is_hourly and unit_type == "jour":
-            final = round(final * hours_per_day, 2)  # Use extracted hours per day
-            print(f"🧮 Python Calculated: {final} (hourly min {explicit_min_price} × {hours_per_day} hours)")
-            return str(final)
 
         # Handle hourly-to-monthly conversion (if min is hourly but unit is mois)
-        elif min_price_is_hourly and unit_type == "mois":
+        if min_price_is_hourly and unit_type == "mois":
             # Uses Centralized 'work_days_multiplier' (Safe & Consolidated)
             final = round(num_agents * final * hours_per_day * work_days_multiplier, 2)
             print(f"🧮 Python Calculated: {final} (hourly→monthly: {explicit_min_price}/hr × {hours_per_day}h × {work_days_multiplier}d × {num_agents} agents)")
@@ -752,6 +849,11 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # FORFAIT detection
         elif any(x in row_lower for x in ["forfait", "forfaitaire", "global", "globale", "ensemble", "lot", "prestation globale"]):
             unit_type = "forfait"
+
+        # 🩹 If the fallback keyword-scan now identifies "jour" (AI had said
+        # "unknown"), route it through the dedicated patch too.
+        if unit_type == "jour":
+            return calculate_final_price_jour_patch(data, row_context, quantity_str)
     
     # Calculate based on unit type
     if unit_type == "mois_agent":
@@ -779,13 +881,7 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # PDF may contain the actual price table with calculations
         print(f"🔍 Unit is 'heure' but no explicit price found - will try PDF extraction")
         return None  # Trigger PDF extraction
-    
-    elif unit_type == "jour":
-        # No explicit price found - return None to trigger PDF extraction
-        # PDF may contain the actual price table with calculations
-        print(f"🔍 Unit is 'jour' but no explicit price found - will try PDF extraction")
-        return None  # Trigger PDF extraction
-    
+
     elif unit_type == "mois":
         # Salary per Agent (Standard) — explicit prices handled in Priority 1
         salary = salary_per_agent
@@ -1104,11 +1200,16 @@ def fill_tender_form(page):
 
         # Tax & CNSS
         safe_fill(page.get_by_role("textbox", name="N° d'inscription à la taxe"), MY_DATA['tax_id'])
-        safe_fill(page.get_by_role("textbox", name="N° d’affiliation à la CNSS ou"), MY_DATA['cnss_id'])
+        safe_fill(page.get_by_role("textbox", name="N° d'affiliation à la CNSS ou"), MY_DATA['cnss_id'])
 
         # --- PRICING TABLE WITH AI ---
         page.wait_for_selector("tr", timeout=5000)
         rows = page.locator("tr").all()
+
+        # 🛡️ Track every price the bot decided on this tender, to show a
+        # single, readable recap before it asks for manual confirmation.
+        priced_rows_summary = []
+
         for row in rows:
             row_text = row.inner_text().lower()
             spin = row.get_by_role("spinbutton")
@@ -1123,6 +1224,7 @@ def fill_tender_form(page):
                 # Python detect unit (safe scope)
                 detected_unit = detect_unit_from_row(row)
 
+                ai_data = None
                 if context["description"]:
                     # AI ANALYSIS (Universal for Services & Products)
                     print(f"📊 Row Context:")
@@ -1171,8 +1273,17 @@ def fill_tender_form(page):
                     unit_ai = ai_data.get("unit_type") if ai_data else None
 
                     if detected_unit == "jour" or unit_ai == "jour":
-                        target_value = TARGET_PRICES["jour"]      # Returns 143.36 (Explicit)
-                        print(f"⚠️ Fallback to Standard DAILY Price: {target_value} (Source: {'Python' if detected_unit=='jour' else 'AI'})")
+                        # 🩹 Even in the last-resort fallback, respect num_agents
+                        # if the AI managed to extract it despite failing to
+                        # produce a full price (avoids reverting the "18 vigiles"
+                        # bug in the fallback path too).
+                        fallback_agents = (ai_data.get("num_agents") if ai_data else None) or 1
+                        if fallback_agents > 1:
+                            target_value = round(TARGET_PRICES["jour"] * fallback_agents, 2)
+                            print(f"⚠️ Fallback to Standard DAILY Price × {fallback_agents} agents: {target_value}")
+                        else:
+                            target_value = TARGET_PRICES["jour"]      # Returns 143.36 (Explicit)
+                            print(f"⚠️ Fallback to Standard DAILY Price: {target_value} (Source: {'Python' if detected_unit=='jour' else 'AI'})")
                     elif detected_unit == "mois" or detected_unit == "mois_agent" or unit_ai == "mois":
                         target_value = TARGET_PRICES["mois"]      # Returns 4144.00 (Explicit)
                         print(f"⚠️ Fallback to Standard MONTHLY Price: {target_value} (Source: {'Python' if 'mois' in detected_unit else 'AI'})")
@@ -1202,6 +1313,14 @@ def fill_tender_form(page):
                         original = float(target_value)
                         target_value = str(max(round(original - PRICE_UNDERCUT, 2), 0.01))
                         print(f"💰 Competitive Price: {original} - {PRICE_UNDERCUT} = {target_value}")
+
+                    priced_rows_summary.append({
+                        "description": context.get("description", "")[:70],
+                        "unite": context.get("unite", ""),
+                        "quantity": context.get("quantity", ""),
+                        "price": target_value,
+                    })
+
                     if existing_price and existing_price.strip() == str(target_value):
                         continue 
                     
@@ -1216,6 +1335,29 @@ def fill_tender_form(page):
             safe_click(btn_gen)
             page.wait_for_load_state("networkidle")
             page.wait_for_timeout(800)
+
+            # 🛡️ SAFETY CHECKPOINT: pause here so a human can review the
+            # calculated prices BEFORE the bot digitally signs and submits a
+            # legally-binding offer. This is deliberately a blocking prompt —
+            # the pricing logic above still has known edge cases (unit
+            # ambiguity, multi-agent "jour" rows, PDF-derived fallbacks) that
+            # deserve a human sanity check before commitment.
+            if REQUIRE_MANUAL_CONFIRMATION_BEFORE_SIGNING:
+                print("\n" + "=" * 60)
+                print(f"🛑 CONFIRMATION REQUISE — {page.url}")
+                print("=" * 60)
+                if priced_rows_summary:
+                    for r in priced_rows_summary:
+                        print(f"  • [{r['unite']}] qty={r['quantity']} → {r['price']} DH/unité "
+                              f"— {r['description']}")
+                else:
+                    print("  (aucune ligne de prix détectée à afficher — vérifier le devis manuellement)")
+                print("=" * 60)
+                answer = input("Taper 'oui' pour signer et soumettre cette offre, "
+                                "autre chose pour PASSER ce tender: ").strip().lower()
+                if answer not in ("oui", "o", "yes", "y"):
+                    print("⏭️ Soumission annulée par l'utilisateur pour ce tender.")
+                    return
 
             # Sign 1 & 2
             # Sign 1 (Unstoppable Fix: Icon | Title | Href)
