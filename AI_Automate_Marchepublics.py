@@ -74,7 +74,8 @@ MY_DATA = {
 TARGET_PRICES = {
     "heure": 17.92,
     "jour": 143.36,
-    "mois": 4144.00
+    "mois": 4144.00,
+    "personne": 3500.00
 }
 
 # --- SETTINGS ---
@@ -451,6 +452,7 @@ def detect_unit_from_row(row):
         # PERSONNE/AGENT
         "personne": "personne", "personnes": "personne", "pers": "personne",
         "agent": "personne", "agents": "personne",
+        "poste": "personne", "postes": "personne",
         "homme": "personne", "hommes": "personne",
         "femme": "personne", "femmes": "personne",
         "vigile": "personne", "vigiles": "personne",
@@ -835,6 +837,7 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # PERSONNE/AGENT detection (comprehensive)
         elif any(x in row_lower for x in [
             "personne", "personnes", "pers", "agent", "agents",
+            "poste", "postes",
             "homme", "hommes", "femme", "femmes",
             "vigile", "vigiles", "gardien", "gardiens",
             "ouvrier", "ouvriers", "ouvrière", "ouvrières",
@@ -1320,8 +1323,8 @@ def fill_tender_form(page):
                         target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
                         print(f"⚠️ Fallback to Standard MONTHLY Price for 'forfait' (last resort, AI+PDF both failed): {target_value}")
                     elif detected_unit in ["personne", "agent"] or unit_ai in ["personne", "agent"]:
-                        target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
-                        print(f"⚠️ Fallback to Standard MONTHLY Price for 'personne' (last resort, AI+PDF both failed): {target_value}")
+                        target_value = TARGET_PRICES["personne"]  # Last-resort default (only after AI + PDF extraction both failed)
+                        print(f"⚠️ Fallback to Standard 'personne/poste' Price (last resort, AI+PDF both failed): {target_value}")
                     
                     # PRIORITY B: Broad Match (Only if Unit Column failed)
                     # REORDERED: Check 'Mois' & 'Jour' first, because 'Heure' is a common noise word
