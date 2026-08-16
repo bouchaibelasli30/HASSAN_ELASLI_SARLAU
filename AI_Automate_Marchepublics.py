@@ -38,9 +38,9 @@ if not os.path.isabs(PROCESSED_FILE):
 from dotenv import load_dotenv
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-os.environ.get("GEMINI_API_KEY")
-print("DEBUG:", repr(GEMINI_API_KEY))
-print("DEBUG length:", len(GEMINI_API_KEY) if GEMINI_API_KEY else "None")
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY not found. Set it in your .env file.")
+print(f"DEBUG: key loaded (length={len(GEMINI_API_KEY)})")  # ⚠️ never print the raw key
 os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY # Set for potential sub-processes
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -1290,7 +1290,11 @@ def fill_tender_form(page):
                         elif detected_unit != "unknown":
                             unit_for_pdf = detected_unit
                             
-                        target_value = get_price_from_zip(page, unit_for_pdf, hours_per_day=hours_override)
+                        target_value = get_price_from_zip(
+                            page, unit_for_pdf,
+                            hours_per_day=hours_override,
+                            role_description=context["description"]
+                        )
                         
                         if target_value:
                             print(f"📄 PDF Price Found: {target_value}")
