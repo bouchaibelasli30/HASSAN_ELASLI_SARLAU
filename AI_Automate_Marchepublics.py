@@ -1642,7 +1642,11 @@ def run_automation():
                 current_page_idx = 1
                 while True:
                     page.wait_for_load_state("domcontentloaded")
-                    page.wait_for_selector("a:has-text('Référence')", timeout=7000)
+                    try:
+                        page.wait_for_selector("a:has-text('Référence')", timeout=15000)
+                    except TimeoutError:
+                        print(f"📭 Page {current_page_idx}: No results found for this filter (timeout waiting for listings).")
+                        break
 
                     offers = page.locator("a:has-text('Référence')").all()
                     if not offers:
@@ -1696,7 +1700,11 @@ def run_automation():
                 print("\n" + "=" * 60)
                 print(f"🔄 PROCESSING FILTER: prestation = {code}")
                 print("=" * 60)
-                collect_and_process(bmk_url, code)
+                try:
+                    collect_and_process(bmk_url, code)
+                except Exception as e:
+                    print(f"⚠️ Error processing filter {code} (skipping to next filter): {e}")
+                    continue
 
             # --- PHASE 3: MONITORING LOOP (Round-Robin, every {MONITOR_INTERVAL_SECONDS}s) ---
             print(f"\n🕒 Entering monitoring mode. Cycling through {list(bookmarks.keys())} "
@@ -1706,8 +1714,12 @@ def run_automation():
                     for code, bmk_url in bookmarks.items():
                         print(f"🔄 [{code}] Returning to bookmark and refreshing: "
                               f"{datetime.now().strftime('%H:%M:%S')}")
-                        page.goto(bmk_url, wait_until="domcontentloaded", timeout=30000)
-                        page.wait_for_selector("a:has-text('Référence')", timeout=7000)
+                        try:
+                            page.goto(bmk_url, wait_until="domcontentloaded", timeout=30000)
+                            page.wait_for_selector("a:has-text('Référence')", timeout=15000)
+                        except TimeoutError:
+                            print(f"📭 [{code}] No results found (timeout waiting for listings).")
+                            continue
 
                         new_batch = []
                         offers = page.locator("a:has-text('Référence')").all()
