@@ -12,9 +12,6 @@ import time
 from io import BytesIO
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
-
-load_dotenv()
 
 def safe_math_eval(formula_str):
     """Grand-Master Safe Evaluator (Standard 64-bit Precision)"""
@@ -41,17 +38,44 @@ def safe_math_eval(formula_str):
 DOWNLOAD_PATH = r"C:\Users\hp\Downloads\MarchePublics"
 LIBREOFFICE_PATH = r"C:\Program Files\LibreOffice\program\soffice.exe"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise RuntimeError(
+        "GEMINI_API_KEY not found in environment. Make sure it's set in your .env "
+        "file (the main script loads it via load_dotenv() before importing this module)."
+    )
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Ensure download directory exists
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
 # --- VISION PRICE EXTRACTION (GEMINI 3 PRO) ---
-def extract_price_with_gemini_vision(file_bytes, unit_type, hours_per_day=None):
+def extract_price_with_gemini_vision(file_bytes, unit_type, hours_per_day=None, role_description=None):
     """
     Sends the FULL PDF to Gemini 3 Pro (Vision Mode).
     Uses 'Hierarchy of Truth' prompt to extract price from any layout (scanned/digital).
     """
+    role_context_block = ""
+    if role_description:
+        role_context_block = f"""
+[TARGET ROLE / LINE ITEM]
+The price you must find applies SPECIFICALLY to this role/line item (as written on the tender's website table):
+"{role_description}"
+
+⚠️ CRITICAL: Many Moroccan gardiennage/surveillance tenders list a staffing table
+(often under a heading like "Article 3. Effectif, horaires et organisation" or
+"Poste | Nombre d'agents | Horaire") with SEVERAL DIFFERENT ROLES, each having its
+OWN number of agents and its OWN working hours per shift (e.g. Chef d'équipe 12h,
+Agent jour 12h, Agent soir 12h — these are often NOT the default 8h).
+- Find the ROW in that table that matches the TARGET ROLE above (match by role name:
+  "Chef d'équipe", "Agent ... jour", "Agent ... soir", "Maître-chien", etc.)
+- Extract the EXACT hours-per-shift for THAT row into "matched_hours_per_day".
+- Do NOT average across all roles and do NOT reuse another role's hours.
+- If the table has a per-role UNIT PRICE column already filled in for this exact
+  role, prefer that price (Priority 3) over any general/global calculation.
+- If you cannot find a table row matching this specific role, set
+  "matched_hours_per_day": null and proceed with the normal hierarchy below.
+"""
+
     prompt = f"""[ROLE]
 You are a Compliance Officer & Data Extraction Engine for Moroccan public tenders.
 Your Goal: Understand the document's meaning perfectly—regardless of layout or phrasing—and identify the MINIMUM COMPLIANT BID PRICE (Prix Unitaire HT).
@@ -59,6 +83,7 @@ Your Goal: Understand the document's meaning perfectly—regardless of layout or
 [INPUT_CONTEXT]
 - File detected as: FULL PDF DOCUMENT (Vision Mode)
 - Unit Type Context: {unit_type}
+{role_context_block}
 
 [HIERARCHY_OF_TRUTH] (Follow Order 1 -> 3 EXACTLY)
 You must search for the price in this specific order of authority. Once a valid price is found, STOP and return it.
@@ -71,6 +96,19 @@ Search the text contexts (outside the tables) for mandatory pricing thresholds.
 - Look for: "Minimum: X DH"
 - Look for (ARABIC): "يقل عن" (less than), "الحد الأدنى" (minimum), "سعر ادنى" (min price), "مبلغ أدنى" (min amount)
 -> IF FOUND: Return X. Set "found_in_text_warning": true.
+
+⚠️ ROLE-SPECIFICITY GUARD (applies when [TARGET ROLE / LINE ITEM] is provided above):
+- ONLY use this priority if the warning/minimum applies DIRECTLY to the target role
+  itself (e.g. "le prix du Chef d'équipe ne doit pas être inférieur à X").
+- Do NOT use a GLOBAL/PROJECT-WIDE figure — such as the overall "estimation du
+  maître d'ouvrage" (total contract value) combined with the eviction rule
+  ("offre inférieure de plus de 20% est écartée") — as if it were a per-role price.
+  That total covers ALL roles combined over the full contract; dividing it evenly
+  across agents/months produces a WRONG flat rate that ignores that different
+  roles (chef d'équipe, night shifts, maître-chien, etc.) are paid differently.
+- If the only "warning" you can find is this kind of global estimation math, treat
+  it as NOT FOUND for Priority 1 — set "found_in_text_warning": false and continue
+  to Priority 2/3, using the role-matched staffing table row instead (see above).
 
 ## PRIORITY 2: TEMPLATE CALCULATION (Empty Tables)
  If columns 12, 13, 14 exist but are empty or contain formulas, YOU MUST CALCULATE THE PRICE.
@@ -158,6 +196,7 @@ Return ONLY valid JSON:
     "missing_charge": "boolean",
     "missing_margin": "boolean",
     "found_price_is_hourly": "boolean",
+    "matched_hours_per_day": "number|null",
     "confidence": "string",
     "source": "string"
 }}
@@ -271,6 +310,17 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
             if price and confidence != "none":
                 price = float(price)
 
+                # --- 🎯 ROLE-MATCHED HOURS OVERRIDE ---
+                # If Gemini found the specific row for this role in a multi-role
+                # staffing table, trust that value over whatever hours_per_day was
+                # passed in (which may reflect a DIFFERENT role's hours, e.g. the
+                # short website description defaulting to 8h for "Chef d'équipe").
+                matched_hours = result.get("matched_hours_per_day")
+                if matched_hours:
+                    print(f"🎯 Role-matched hours found in staffing table: {matched_hours}h "
+                          f"(overriding previous value: {hours_per_day})")
+                    hours_per_day = matched_hours
+
                 # --- 🏁 GRAND-MASTER SYMBOLIC ENGINE (The Precision Layer) ---
                 if result.get("calculation_formula"):
                     formula_price = safe_math_eval(result["calculation_formula"])
@@ -339,7 +389,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
         print(f"⚠️ Gemini Vision API Error: {e}")
         return None
 
-def read_pdf_from_bytes(file_bytes, unit_type=None, hours_per_day=None):
+def read_pdf_from_bytes(file_bytes, unit_type=None, hours_per_day=None, role_description=None):
     """
     Smart PDF Reader (Vision Upgrade).
     1. ZERO-TOKEN PROTOCOL: Quickly scan for keywords or check if Scanned.
@@ -354,7 +404,7 @@ def read_pdf_from_bytes(file_bytes, unit_type=None, hours_per_day=None):
     try:
         # Full unconditional scan as user requested
         print(f"🚀 Vision Engine: ACCELERATED [User Requested 100% Full Scan Mode]. Sending to Gemini...")
-        return extract_price_with_gemini_vision(file_bytes, unit_type, hours_per_day)
+        return extract_price_with_gemini_vision(file_bytes, unit_type, hours_per_day, role_description)
 
     except Exception as e:
         print(f"⚠️ PDF Read Error: {e}")
@@ -473,12 +523,12 @@ def convert_office_to_pdf(file_bytes, input_filename):
             pass
 
 # --- FILE READER DISPATCHER ---
-def read_file_from_bytes(filename, file_bytes, unit_type=None, hours_per_day=None):
+def read_file_from_bytes(filename, file_bytes, unit_type=None, hours_per_day=None, role_description=None):
     """Read file content based on extension."""
     filename_lower = filename.lower()
     
     if filename_lower.endswith('.pdf'):
-        return read_pdf_from_bytes(file_bytes, unit_type, hours_per_day)
+        return read_pdf_from_bytes(file_bytes, unit_type, hours_per_day, role_description)
     
     # 🆕 TRY CONVERSION FOR OFFICE FILES
     elif filename_lower.endswith(('.xlsx', '.xls', '.docx', '.doc')):
@@ -487,7 +537,7 @@ def read_file_from_bytes(filename, file_bytes, unit_type=None, hours_per_day=Non
         
         if pdf_bytes:
             print("👁️ Sending Converted PDF to Gemini Vision...")
-            return read_pdf_from_bytes(pdf_bytes, unit_type, hours_per_day)
+            return read_pdf_from_bytes(pdf_bytes, unit_type, hours_per_day, role_description)
         else:
             print("⚠️ Conversion failed, falling back to legacy Text Reader.")
             # FALLBACK to Legacy Text Readers
@@ -588,7 +638,7 @@ def download_zip_file(page, link_element, filename):
         return None
 
 # --- READ ZIP AND EXTRACT PRICE ---
-def read_zip_and_extract_price(zip_path, unit_type, hours_per_day=None):
+def read_zip_and_extract_price(zip_path, unit_type, hours_per_day=None, role_description=None):
     """
     Read ZIP file, find priority file, extract text, get price with AI.
     Reads files in memory without extracting to disk.
@@ -624,7 +674,7 @@ def read_zip_and_extract_price(zip_path, unit_type, hours_per_day=None):
                 file_bytes = zip_file.read(filename)
                 
                 # Check for Vision Price (Float) from PDF or Text content
-                result = read_file_from_bytes(filename, file_bytes, unit_type, hours_per_day)
+                result = read_file_from_bytes(filename, file_bytes, unit_type, hours_per_day, role_description)
                 
                 if isinstance(result, float):
                     print(f"🎯 Vision Price Found: {result}")
@@ -649,7 +699,7 @@ def read_zip_and_extract_price(zip_path, unit_type, hours_per_day=None):
         return None
 
 # --- MAIN ENTRY POINT ---
-def get_price_from_zip(page, unit_type, hours_per_day=None):
+def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=None):
     """
     Main entry point for PDF price extraction.
     Called by main script when no price found in description.
@@ -657,6 +707,9 @@ def get_price_from_zip(page, unit_type, hours_per_day=None):
     Args:
         page: Playwright page object
         unit_type: Detected unit type (heure, jour, mois, etc.)
+        hours_per_day: Hours per day from the earlier (short description) AI pass
+        role_description: The full row description (e.g. "Chef d'équipe"), used to
+            match the correct row in a multi-role staffing table inside the PDF.
     
     Returns:
         Price as string or None if not found
@@ -678,7 +731,7 @@ def get_price_from_zip(page, unit_type, hours_per_day=None):
         return None
     
     # Step 3: Read ZIP and extract price
-    price = read_zip_and_extract_price(zip_path, unit_type, hours_per_day)
+    price = read_zip_and_extract_price(zip_path, unit_type, hours_per_day, role_description)
     
     # Step 4: Cleanup (optional - keep file for debugging)
     os.remove(zip_path)
