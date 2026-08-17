@@ -76,11 +76,18 @@ Agent jour 12h, Agent soir 12h — these are often NOT the default 8h).
 - Find the ROW in that table that matches the TARGET ROLE above (match by role name:
   "Chef d'équipe", "Agent ... jour", "Agent ... soir", "Maître-chien", etc.)
 - Extract the EXACT hours-per-shift for THAT row into "matched_hours_per_day".
+  ⚠️ Fill this field WHENEVER you find a matching staffing/schedule table row —
+  this is independent from whether a PRICE or price-breakdown table exists
+  elsewhere. Even if you cannot find any price at all in the document (so
+  "price" will be null), still report "matched_hours_per_day" if you found it.
+  This is just DATA you observed, not a price calculation, so it's always safe
+  to report.
 - Do NOT average across all roles and do NOT reuse another role's hours.
 - If the table has a per-role UNIT PRICE column already filled in for this exact
   role, prefer that price (Priority 3) over any general/global calculation.
-- If you cannot find a table row matching this specific role, set
-  "matched_hours_per_day": null and proceed with the normal hierarchy below.
+- If you cannot find ANY table row matching this specific role anywhere in the
+  document, set "matched_hours_per_day": null and proceed with the normal
+  hierarchy below.
 """
 
     prompt = f"""[ROLE]
@@ -386,8 +393,26 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                  # Check for calculation flag
                 if result.get("is_calculated"):
                     print("👁️ Vision calculated price from SMIG formula.")
-                else:
-                    print(f"👁️ Vision found no price. Confidence: {confidence}")
+
+                # --- 🎯 ROLE-MATCHED HOURS FALLBACK (no price/price-table found) ---
+                # Even when Priority 1/2/3 found no usable price (e.g. the document
+                # only has a staffing/schedule table like "Article 3. Effectif,
+                # horaires et organisation" with NO price breakdown columns),
+                # Gemini may still have located this specific role's row and
+                # extracted its real hours-per-shift into "matched_hours_per_day".
+                # Use that to compute a safe SMIG-based price ourselves — via the
+                # SAME formula already proven for the other roles — instead of
+                # falling all the way through to the generic flat default.
+                matched_hours = result.get("matched_hours_per_day")
+                if matched_hours:
+                    computed_price = round(17.92 * float(matched_hours) * 30, 2)
+                    print(f"🧮 No price found, but role-matched hours were: "
+                          f"{matched_hours}h/shift (from staffing table). "
+                          f"Computing SMIG-based price: 17.92 × {matched_hours}h × 30j "
+                          f"= {computed_price}")
+                    return computed_price
+
+                print(f"👁️ Vision found no price. Confidence: {confidence}")
                 return None
         else:
             return None
