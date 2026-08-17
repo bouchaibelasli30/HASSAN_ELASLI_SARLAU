@@ -287,7 +287,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                     full_response_text = "" # Reset buffer
                     time.sleep(13)  # Respect RPM limit
                     for chunk in gemini_client.models.generate_content_stream(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.6-flash",
                         contents=contents,
                         config=fallback_config,
                     ):
