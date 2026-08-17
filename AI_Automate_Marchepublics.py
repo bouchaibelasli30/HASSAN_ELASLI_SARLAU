@@ -391,7 +391,7 @@ Quantité: "{quantity}"
             if ("503" in error_msg or "429" in error_msg or "500" in error_msg
                     or "504" in error_msg or "Overloaded" in error_msg
                     or "400" in error_msg or "INVALID_ARGUMENT" in error_msg):
-                print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 2.5 Pro...")
+                print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 3.6 Flash...")
 
                 # --- ATTEMPT 2: FALLBACK (Gemini 2.5 Pro) ---
                 fallback_config = types.GenerateContentConfig(
@@ -596,6 +596,24 @@ def calculate_final_price_jour_patch(data, row_context, quantity_str=None):
 
         # A3: prix minimum = taux PAR AGENT PAR JOUR (cas standard, ex: 143.36)
         if num_agents > 1:
+            # 🛡️ SANITY CHECK: avoid double-counting agents when the site's
+            # own "Quantité" column already represents agent-days (agents ×
+            # days), not pure days. If qty/num_agents lands close to a clean
+            # whole number within a plausible contract-length range, qty is
+            # very likely ALREADY agent-days — multiplying again would
+            # silently double (or more) the submitted price.
+            if qty > 0:
+                implied_days = qty / num_agents
+                is_clean_whole = abs(implied_days - round(implied_days)) < 0.05
+                is_plausible_duration = 5 <= implied_days <= 400
+                if is_clean_whole and is_plausible_duration:
+                    print(f"🛡️ Sanity check: qty({qty}) / num_agents({num_agents}) = "
+                          f"{implied_days:.1f} looks like a clean day-count — "
+                          f"'Quantité' is very likely ALREADY agent-days. "
+                          f"Using rate as-is: {final} (NOT multiplying by "
+                          f"{num_agents} agents, to avoid double-counting).")
+                    return str(final)
+
             final = round(final * num_agents, 2)
             print(f"🧮 Jour (taux/agent/jour × agents): {explicit_min_price} × {num_agents} agents = {final}")
             return str(final)
