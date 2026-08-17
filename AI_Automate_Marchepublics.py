@@ -401,7 +401,7 @@ Quantité: "{quantity}"
 
                 time.sleep(13)  # Respect RPM limit before fallback call
                 for chunk in gemini_client.models.generate_content_stream(
-                    model="gemini-2.5-flash",
+                model="gemini-3.6-flash",
                     contents=contents,
                     config=fallback_config,
                 ):
@@ -1238,6 +1238,10 @@ def fill_tender_form(page):
         # 🛡️ Track every price the bot decided on this tender, to show a
         # single, readable recap before it asks for manual confirmation.
         priced_rows_summary = []
+        # 🛑 Track any row where we truly found NO price at all (AI + PDF +
+        # every fallback failed) — these must NEVER be silently submitted as
+        # an empty/0 DH line item on a real government bid.
+        unpriced_rows = []
 
         for row in rows:
             row_text = row.inner_text().lower()
@@ -1361,6 +1365,28 @@ def fill_tender_form(page):
                     spin.first.click()
                     spin.first.fill("") 
                     spin.first.type(str(target_value), delay=25)
+                else:
+                    # 🛑 NO PRICE FOUND ANYWHERE (AI, PDF, and every fallback
+                    # all failed — e.g. API quota exhausted + fallback model
+                    # unavailable). Do NOT leave this line at 0/empty and
+                    # silently submit a broken government bid. Record it so
+                    # we can abort the whole tender below.
+                    unpriced_rows.append(context.get("description", "")[:80])
+                    print(f"🛑 NO PRICE FOUND for this row — will abort this tender "
+                          f"instead of submitting an incomplete devis.")
+
+        # 🛑 HARD STOP: if any row on this tender got NO price at all, abort
+        # completely rather than generate/sign/submit a devis with 0 DH or
+        # missing line items. This is a real, legally-binding government bid.
+        if unpriced_rows:
+            print("\n" + "=" * 60)
+            print(f"🛑 ABANDON DU TENDER — {page.url}")
+            print("   Prix introuvable pour {} ligne(s) — soumission annulée "
+                  "pour éviter un devis incomplet/0 DH:".format(len(unpriced_rows)))
+            for desc in unpriced_rows:
+                print(f"   • {desc}")
+            print("=" * 60)
+            return
 
         # Devis Generation
         btn_gen = page.get_by_role("button", name="Générer un devis")
