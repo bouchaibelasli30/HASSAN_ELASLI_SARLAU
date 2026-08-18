@@ -623,6 +623,23 @@ def calculate_final_price_jour_patch(data, row_context, quantity_str=None):
 
     # ---------- CAS B: aucun prix minimum explicite ----------
     if num_agents > 1:
+        # 🛡️ SANITY CHECK (same as CAS A): avoid double-counting agents when
+        # 'Quantité' already represents agent-days (agents × days), not pure
+        # days. If qty/num_agents is a clean whole number within a plausible
+        # contract-length range, qty is very likely ALREADY agent-days.
+        if qty > 0:
+            implied_days = qty / num_agents
+            is_clean_whole = abs(implied_days - round(implied_days)) < 0.05
+            is_plausible_duration = 5 <= implied_days <= 400
+            if is_clean_whole and is_plausible_duration:
+                final = DEFAULT_DAILY_PATCH
+                print(f"🛡️ Sanity check: qty({qty}) / num_agents({num_agents}) = "
+                      f"{implied_days:.1f} looks like a clean day-count — "
+                      f"'Quantité' is very likely ALREADY agent-days. "
+                      f"Using SMIG rate as-is: {final} (NOT multiplying by "
+                      f"{num_agents} agents, to avoid double-counting).")
+                return str(final)
+
         final = round(DEFAULT_DAILY_PATCH * num_agents, 2)
         print(f"🧮 Jour (fallback SMIG × agents): {DEFAULT_DAILY_PATCH} × {num_agents} agents = {final} "
               f"— Quantité site = jours seulement, pas agent-jours")
@@ -1346,8 +1363,34 @@ def fill_tender_form(page):
                         target_value = TARGET_PRICES["heure"]     # Returns 17.92 (Explicit)
                         print(f"⚠️ Fallback to Standard HOURLY Price: {target_value} (Source: {'Python' if detected_unit=='heure' else 'AI'})")
                     elif detected_unit == "forfait" or unit_ai == "forfait":
-                        target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
-                        print(f"⚠️ Fallback to Standard MONTHLY Price for 'forfait' (last resort, AI+PDF both failed): {target_value}")
+                        # 🛡️ Don't blindly reuse the generic MONTHLY fallback
+                        # for a forfait that clearly covers a MULTI-DAY scope
+                        # (e.g. "88 jours") — that produced a total price far
+                        # below any realistic cost for the described duration
+                        # and got a real bid rejected ("Devis écarté").
+                        # Try to find an explicit day-count in the row text
+                        # (e.g. "(88) quatre-vingt-huit jours", "pendant 88
+                        # jours") and scale the SMIG daily rate by it instead.
+                        stated_days = None
+                        desc_text = context.get("description", "")
+                        m = re.search(r'\(\s*(\d{1,4})\s*\)\s*[\w\-]*\s*jours?', desc_text, re.IGNORECASE)
+                        if not m:
+                            m = re.search(r'(\d{1,4})\s*jours?', desc_text, re.IGNORECASE)
+                        if m:
+                            stated_days = int(m.group(1))
+
+                        fallback_agents = (ai_data.get("num_agents") if ai_data else None) or 1
+
+                        if stated_days and stated_days > 1:
+                            target_value = round(TARGET_PRICES["jour"] * stated_days * fallback_agents, 2)
+                            print(f"⚠️ Fallback for 'forfait': found explicit duration "
+                                  f"({stated_days} jours) in description. Scaling: "
+                                  f"{TARGET_PRICES['jour']} × {stated_days} jours × "
+                                  f"{fallback_agents} agent(s) = {target_value} "
+                                  f"(last resort, AI+PDF both failed)")
+                        else:
+                            target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
+                            print(f"⚠️ Fallback to Standard MONTHLY Price for 'forfait' (last resort, AI+PDF both failed): {target_value}")
                     elif detected_unit in ["personne", "agent"] or unit_ai in ["personne", "agent"]:
                         target_value = TARGET_PRICES["personne"]  # Last-resort default (only after AI + PDF extraction both failed)
                         print(f"⚠️ Fallback to Standard 'personne/poste' Price (last resort, AI+PDF both failed): {target_value}")
