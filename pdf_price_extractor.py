@@ -61,6 +61,32 @@ def extract_price_with_gemini_vision(file_bytes, unit_type, hours_per_day=None, 
     Sends the FULL PDF to Gemini 3 Pro (Vision Mode).
     Uses 'Hierarchy of Truth' prompt to extract price from any layout (scanned/digital).
     """
+    total_hours_block = f"""
+[TOTAL WORK-HOURS FOR A LUMP-SUM "FORFAIT" LINE]
+Unit Type Context is "{unit_type}". If this is "forfait" (a single lump-sum line
+covering the WHOLE contract, e.g. "Lot unique", qty=1, no per-role breakdown),
+Moroccan gardiennage/surveillance CPS documents very often state the TOTAL
+work-hours for the ENTIRE contract directly in prose, near the object/duration
+clause — e.g. "Délai d'exécution... 2112 Heures pendant 88 jours", or "soit un
+total de X heures". This is usually the SUM of hours worked by ALL agents
+combined (all shifts, all agents) over the full contract duration — NOT a
+per-agent or per-day figure.
+- Search the document (Article 1 "Objet"/"Délai d'exécution" and Article 2
+  "Effectifs" are the most common locations) for this total-hours statement.
+- If found, extract the raw number into "total_hours_all_agents" (e.g. 2112).
+  ⚠️ Report this field WHENEVER you find such a statement — independent of
+  whether a price/price-breakdown table exists. This is DATA you observed
+  (a number written in the text), not a price calculation, so it is always
+  safe to report even if "price" ends up null.
+- A staffing table (e.g. "Effectif | jours ouvrables | jours fériés" with rows
+  like Chef d'équipe, agents, télésurveillance...) is a supporting detail —
+  if it has its own "heures" total row, that number should match the prose
+  statement; use it to confirm, not as a substitute if the two only look
+  similar. Prefer the explicit prose total when both are present.
+- If no such total-hours statement exists anywhere, set
+  "total_hours_all_agents": null.
+"""
+
     role_context_block = ""
     if role_description:
         role_context_block = f"""
@@ -275,7 +301,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
             ]
             
             if any(err in error_msg for err in recoverable):
-                print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 2.5 Flash...")
+                print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 3.6 Flash...")
                 
                 # --- ATTEMPT 2: FALLBACK (Gemini 2.5 Flash) ---
                 try:
