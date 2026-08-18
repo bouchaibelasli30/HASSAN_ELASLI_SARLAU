@@ -1381,12 +1381,26 @@ def fill_tender_form(page):
 
                         fallback_agents = (ai_data.get("num_agents") if ai_data else None) or 1
 
-                        if stated_days and stated_days > 1:
-                            target_value = round(TARGET_PRICES["jour"] * stated_days * fallback_agents, 2)
-                            print(f"⚠️ Fallback for 'forfait': found explicit duration "
-                                  f"({stated_days} jours) in description. Scaling: "
-                                  f"{TARGET_PRICES['jour']} × {stated_days} jours × "
-                                  f"{fallback_agents} agent(s) = {target_value} "
+                        if fallback_agents > 1:
+                            # 🛑 A forfait covering a MULTI-AGENT team (e.g. a
+                            # full shift-based staffing table with 20+ agents
+                            # across day/night rotations) cannot be safely
+                            # estimated from a flat day-rate guess — the real
+                            # cost depends on how many agents work each shift,
+                            # which only the attached CPS/PDF table has. A
+                            # wrong guess here can be off by 20-80x (verified
+                            # on a real rejected bid). Abort instead of
+                            # submitting a dangerously wrong price.
+                            unpriced_rows.append(desc_text[:80])
+                            print(f"🛑 NO SAFE PRICE FOR 'forfait' WITH {fallback_agents} AGENTS — "
+                                  f"a flat guess would be wildly inaccurate for a multi-agent "
+                                  f"shift-based team. Will abort this tender instead of "
+                                  f"submitting an incomplete/wrong devis.")
+                        elif stated_days and stated_days > 1:
+                            target_value = round(TARGET_PRICES["jour"] * stated_days, 2)
+                            print(f"⚠️ Fallback for 'forfait' (single position): found explicit "
+                                  f"duration ({stated_days} jours) in description. Scaling: "
+                                  f"{TARGET_PRICES['jour']} × {stated_days} jours = {target_value} "
                                   f"(last resort, AI+PDF both failed)")
                         else:
                             target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
