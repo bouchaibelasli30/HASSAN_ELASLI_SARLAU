@@ -114,6 +114,21 @@ Agent jour 12h, Agent soir 12h — these are often NOT the default 8h).
 - If you cannot find ANY table row matching this specific role anywhere in the
   document, set "matched_hours_per_day": null and proceed with the normal
   hierarchy below.
+
+[TOTAL AGENT COUNT — ALWAYS ATTEMPT THIS, SEPARATELY FROM THE ABOVE]
+Independently of the role-matching above, search the ENTIRE document for the
+TOTAL number of agents/personnel required for the WHOLE contract (not just one
+role/shift). Look for phrases like "par X agents qualifiés", "effectif de X
+agents", "un effectif de X personnes", or a "Total" row at the bottom of a
+staffing/schedule table (e.g. "Total: 13 / 8 / 8" per shift — in that case sum
+the distinct people, or take the largest simultaneous total, whichever the
+document makes clearest).
+- Report this as "matched_total_agents" (an integer).
+- This is independent from "matched_hours_per_day" — fill both if you can find
+  them, fill only the one you find if you can't find the other, and set
+  "matched_total_agents": null if no total agent count is stated anywhere.
+- This is just DATA you observed, not a price — always safe to report even
+  when "price" ends up null.
 """
 
     prompt = f"""[ROLE]
@@ -237,6 +252,7 @@ Return ONLY valid JSON:
     "missing_margin": "boolean",
     "found_price_is_hourly": "boolean",
     "matched_hours_per_day": "number|null",
+    "matched_total_agents": "integer|null",
     "confidence": "string",
     "source": "string"
 }}
@@ -325,11 +341,11 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                         result = json.loads(match.group(0))
                     else:
                         print(f"⚠️ Gemini Flash also failed JSON: {full_response_text[:100]}...")
-                        return None
+                        return None, None
                         
                 except Exception as e2:
                     print(f"⚠️ Failover (Gemini 2.5 Flash) also crashed: {e2}")
-                    return None
+                    return None, None
             else:
                 # If it's a critical error (e.g. Auth), re-raise
                 print(f"⚠️ Critical Error: {e}")
@@ -349,6 +365,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
             
             if price and confidence != "none":
                 price = float(price)
+                matched_total_agents = result.get("matched_total_agents")
 
                 # --- 🎯 ROLE-MATCHED HOURS OVERRIDE ---
                 # If Gemini found the specific row for this role in a multi-role
@@ -414,11 +431,13 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                     else:
                         print(f"👁️ Vision Extracted: {price}")
                         
-                return price
+                return price, matched_total_agents
             else:
                  # Check for calculation flag
                 if result.get("is_calculated"):
                     print("👁️ Vision calculated price from SMIG formula.")
+
+                matched_total_agents = result.get("matched_total_agents")
 
                 # --- 🎯 ROLE-MATCHED HOURS FALLBACK (no price/price-table found) ---
                 # Even when Priority 1/2/3 found no usable price (e.g. the document
@@ -436,16 +455,20 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                           f"{matched_hours}h/shift (from staffing table). "
                           f"Computing SMIG-based price: 17.92 × {matched_hours}h × 30j "
                           f"= {computed_price}")
-                    return computed_price
+                    return computed_price, matched_total_agents
 
                 print(f"👁️ Vision found no price. Confidence: {confidence}")
-                return None
+                # 🎯 Even with NO price at all, still surface matched_total_agents
+                # if Gemini found it — the caller needs this to decide whether a
+                # flat/generic fallback guess is safe (single position) or
+                # dangerous (large multi-agent team) before blindly guessing.
+                return None, matched_total_agents
         else:
-            return None
+            return None, None
 
     except Exception as e:
         print(f"⚠️ Gemini Vision API Error: {e}")
-        return None
+        return None, None
 
 def read_pdf_from_bytes(file_bytes, unit_type=None, hours_per_day=None, role_description=None):
     """
@@ -466,7 +489,7 @@ def read_pdf_from_bytes(file_bytes, unit_type=None, hours_per_day=None, role_des
 
     except Exception as e:
         print(f"⚠️ PDF Read Error: {e}")
-        return None
+        return None, None
 
 # --- EXCEL READING (openpyxl) ---
 def read_excel_from_bytes(file_bytes):
@@ -731,12 +754,26 @@ def read_zip_and_extract_price(zip_path, unit_type, hours_per_day=None, role_des
                 
                 file_bytes = zip_file.read(filename)
                 
-                # Check for Vision Price (Float) from PDF or Text content
+                # Check for Vision Price from PDF (returns a (price, matched_total_agents)
+                # tuple) or legacy text content (returns a plain str or None).
                 result = read_file_from_bytes(filename, file_bytes, unit_type, hours_per_day, role_description)
                 
-                if isinstance(result, float):
-                    print(f"🎯 Vision Price Found: {result}")
-                    return str(result)
+                if isinstance(result, tuple):
+                    price, matched_total_agents = result
+                    if price is not None:
+                        print(f"🎯 Vision Price Found: {price}")
+                        return str(price), matched_total_agents
+                    if matched_total_agents:
+                        # No price, but we DID learn the real total agent count
+                        # from the PDF's staffing table — surface it anyway so
+                        # the caller can decide whether a flat fallback guess
+                        # would be safe (single position) or dangerous (large
+                        # multi-agent team), instead of blindly assuming 1.
+                        print(f"   ⚠️ No price found in this file, but total agent "
+                              f"count was: {matched_total_agents}")
+                        return None, matched_total_agents
+                    print(f"   ⚠️ File has insufficient text content or Conversion failed.")
+                    continue
                 
                 # Fallback for Text-based files (Legacy Text Reader)
                 # Since 'extract_price_with_ai' is removed, we cannot process raw text.
@@ -747,14 +784,14 @@ def read_zip_and_extract_price(zip_path, unit_type, hours_per_day=None, role_des
                     print(f"   ⚠️ File has insufficient text content or Conversion failed.")
             
             print("📄 No price found in any ZIP file")
-            return None
+            return None, None
             
     except zipfile.BadZipFile:
         print(f"⚠️ Invalid ZIP file: {zip_path}")
-        return None
+        return None, None
     except Exception as e:
         print(f"⚠️ ZIP read error: {e}")
-        return None
+        return None, None
 
 # --- MAIN ENTRY POINT ---
 def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=None):
@@ -770,7 +807,12 @@ def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=Non
             match the correct row in a multi-role staffing table inside the PDF.
     
     Returns:
-        Price as string or None if not found
+        (price, matched_total_agents) tuple. price is a string or None if not
+        found. matched_total_agents is the total agent/headcount the PDF's
+        staffing table stated for the WHOLE contract (int) or None if no such
+        statement was found — the caller needs this to judge whether a flat
+        fallback guess would be safe (single position) or dangerous (a large
+        multi-agent team), even when no usable price could be extracted.
     """
     print("\n📦 === PDF EXTRACTION MODE ===")
     
@@ -779,28 +821,28 @@ def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=Non
     
     if not link_element:
         print("❌ No ZIP file to download")
-        return None
+        return None, None
     
     # Step 2: Download ZIP
     zip_path = download_zip_file(page, link_element, link_text)
     
     if not zip_path:
         print("❌ ZIP download failed")
-        return None
+        return None, None
     
     # Step 3: Read ZIP and extract price
-    price = read_zip_and_extract_price(zip_path, unit_type, hours_per_day, role_description)
+    price, matched_total_agents = read_zip_and_extract_price(zip_path, unit_type, hours_per_day, role_description)
     
     # Step 4: Cleanup (optional - keep file for debugging)
     os.remove(zip_path)
     
     if price:
         print(f"✅ PDF Price: {price}")
-        return str(price)
+        return str(price), matched_total_agents
     else:
         # Fallback: RETURN NONE so Main Script handles the Hard Fallback
         print("🧮 No price in PDF - Returning None (Triggering Main Script Fallback)")
-        return None
+        return None, matched_total_agents
 
 # --- TEST FUNCTION ---
 if __name__ == "__main__":
