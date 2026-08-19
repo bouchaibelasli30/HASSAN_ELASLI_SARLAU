@@ -1316,6 +1316,13 @@ def fill_tender_form(page):
                     if ai_data:
                         target_value = calculate_final_price(ai_data, row_text, detected_unit, context["quantity"])
 
+                    # 🎯 Total agent count found INSIDE the PDF's staffing table
+                    # (e.g. "par 29 agents qualifiés"), if PDF extraction runs
+                    # below. Far more reliable than the short website
+                    # description for multi-agent "forfait" tenders, where the
+                    # real headcount usually only appears in the attached CPS.
+                    pdf_matched_total_agents = None
+
                     if target_value:
                         print(f"💰 AI Identified Price: {target_value}")
                     else:
@@ -1329,7 +1336,7 @@ def fill_tender_form(page):
                         elif detected_unit != "unknown":
                             unit_for_pdf = detected_unit
                             
-                        target_value = get_price_from_zip(
+                        target_value, pdf_matched_total_agents = get_price_from_zip(
                             page, unit_for_pdf,
                             hours_per_day=hours_override,
                             role_description=context["description"]
@@ -1337,6 +1344,9 @@ def fill_tender_form(page):
                         
                         if target_value:
                             print(f"📄 PDF Price Found: {target_value}")
+                        elif pdf_matched_total_agents:
+                            print(f"📄 No PDF price, but PDF stated total agent "
+                                  f"count: {pdf_matched_total_agents}")
 
                 # 2. Fallback (If AI and PDF both fail)
                 # 2. Fallback (Grand Master Logic: Precision > Broad Search)
@@ -1379,7 +1389,11 @@ def fill_tender_form(page):
                         if m:
                             stated_days = int(m.group(1))
 
-                        fallback_agents = (ai_data.get("num_agents") if ai_data else None) or 1
+                        fallback_agents = (
+                            pdf_matched_total_agents
+                            or (ai_data.get("num_agents") if ai_data else None)
+                            or 1
+                        )
 
                         if fallback_agents > 1:
                             # 🛑 A forfait covering a MULTI-AGENT team (e.g. a
