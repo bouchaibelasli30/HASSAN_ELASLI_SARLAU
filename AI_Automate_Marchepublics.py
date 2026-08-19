@@ -70,9 +70,47 @@ MY_DATA = {
     'cnss_id': '2894672'
 }
 
+# --- SOUS DÉTAIL DES PRIX (SMIG + charges patronales) ---
+# Reproduit EXACTEMENT la formule du document "Sous Détail des Prix" imposé
+# par les marchés publics marocains (colonnes a → j) :
+#   a) SMIG/heure
+#   b) Congé annuel payé      = a * 5.77%   (1.5 jour / 26 jours travaillés)
+#   c) Jours fériés           = a * 4.17%   (13 jours fériés/an)
+#   d) Total salaire          = a + b + c
+#   e) Prestations familiales = d * 6.40%
+#   f) AMO (base+solidarité)  = d * 4.11%
+#   g) Indemnités court/long terme = d * 8.98%
+#   h) Taxe Formation Professionnelle = d * 1.60%
+#   i) Autres cotisations     = 0 (sauf mention contraire dans l'avis)
+#   j) TOTAL HT (prix réel à soumissionner) = d + e + f + g + h + i
+# ⚠️ Le "17.92 DH/H" (SMIG brut) n'est QUE la colonne (a) — ce n'est PAS
+# un prix d'offre valable. Une offre chiffrée à 17.92 DH/H ne couvre pas
+# les charges obligatoires et risque d'être écartée par la commission.
+def calculate_sous_detail_price(base_smig_hourly=17.92,
+                                 conge_pct=0.0577, ferie_pct=0.0417,
+                                 prestations_fam_pct=0.0640, amo_pct=0.0411,
+                                 indemnites_pct=0.0898, tfp_pct=0.0160,
+                                 autres_cotisations=0.0):
+    """Calcule le vrai prix HT/heure (colonne j) à partir du SMIG horaire (colonne a),
+    en appliquant toutes les charges patronales du Sous Détail des Prix."""
+    a = base_smig_hourly
+    b = round(a * conge_pct, 4)
+    c = round(a * ferie_pct, 4)
+    d = a + b + c                      # Total salaire chargé (congé + fériés)
+    e = round(d * prestations_fam_pct, 4)
+    f = round(d * amo_pct, 4)
+    g = round(d * indemnites_pct, 4)
+    h = round(d * tfp_pct, 4)
+    j = d + e + f + g + h + autres_cotisations
+    return round(j, 2)
+
+# Taux horaire HT réel (SMIG + charges) — remplace le SMIG brut partout où
+# le code utilisait 17.92 comme SI c'était déjà un prix d'offre final.
+SMIG_HOURLY_HT = calculate_sous_detail_price(17.92)   # ≈ 23.86 DH/H
+
 # --- TARGET PRICES (FALLBACK ONLY IF AI FAILS) ---
 TARGET_PRICES = {
-    "heure": 17.92,
+    "heure": SMIG_HOURLY_HT,      # 23.86 (SMIG 17.92 + charges patronales), pas 17.92 brut
     "jour": 143.36,
     "mois": 4144.00,
     "personne": 3500.00
@@ -670,13 +708,13 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
                 hours = shift.get("hours_per_shift", 8) or 8
                 total_hours += agents * hours * period_days
         if total_hours > 0:
-            final = round(total_hours * 17.92, 2)
-            print(f"🧮 Complex Shift Table: {total_hours}h total × 17.92 DH = {final} DH HT")
+            final = round(total_hours * SMIG_HOURLY_HT, 2)
+            print(f"🧮 Complex Shift Table: {total_hours}h total × {SMIG_HOURLY_HT} DH (SMIG+charges) = {final} DH HT")
             return str(final)
     # --- END NEW LOGIC ---
 
     # Default values
-    DEFAULT_HOURLY = 17.92
+    DEFAULT_HOURLY = SMIG_HOURLY_HT   # 23.86 (SMIG + charges patronales), pas 17.92 brut
     DEFAULT_DAILY = 143.36
     DEFAULT_MONTHLY = 4144.00
     
@@ -905,8 +943,8 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # If no explicit salary AND hours are NON-STANDARD (not 8), calculate correct salary.
         # Handles Part-Time (<8h) AND Overtime (>8h like 12h/24h).
         if not salary and hours_per_day and hours_per_day != 8:
-             final_salary = round(17.92 * hours_per_day * work_days_multiplier, 2)
-             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} (17.92 * {hours_per_day}h * {work_days_multiplier}d)")
+             final_salary = round(SMIG_HOURLY_HT * hours_per_day * work_days_multiplier, 2)
+             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({SMIG_HOURLY_HT} * {hours_per_day}h * {work_days_multiplier}d)")
              salary = final_salary
 
         if salary:
@@ -931,8 +969,8 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # Handles Part-Time (<8h) AND Overtime (>8h like 12h/24h).
         if not salary and hours_per_day and hours_per_day != 8:
              # Uses Centralized 'work_days_multiplier' (Safe & Consolidated)
-             final_salary = round(17.92 * hours_per_day * work_days_multiplier, 2)
-             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} (17.92 * {hours_per_day}h * {work_days_multiplier}d)")
+             final_salary = round(SMIG_HOURLY_HT * hours_per_day * work_days_multiplier, 2)
+             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({SMIG_HOURLY_HT} * {hours_per_day}h * {work_days_multiplier}d)")
              salary = final_salary
         # ------------------------------------------------
 
@@ -954,8 +992,8 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # If no explicit salary AND hours are NON-STANDARD (not 8), calculate correct salary.
         # Handles Part-Time (<8h) AND Overtime (>8h like 12h/24h).
         if not salary and hours_per_day and hours_per_day != 8:
-             final_salary = round(17.92 * hours_per_day * work_days_multiplier, 2)
-             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} (17.92 * {hours_per_day}h * {work_days_multiplier}d)")
+             final_salary = round(SMIG_HOURLY_HT * hours_per_day * work_days_multiplier, 2)
+             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({SMIG_HOURLY_HT} * {hours_per_day}h * {work_days_multiplier}d)")
              salary = final_salary
 
         if salary:
@@ -1008,7 +1046,7 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
 
     else:
         # Unknown unit type - use minimum hourly rate (SMIG) as safe fallback
-        print(f"⚠️ Unknown unit type '{unit_type}', using default {DEFAULT_HOURLY} (hourly SMIG)")
+        print(f"⚠️ Unknown unit type '{unit_type}', using default {DEFAULT_HOURLY} (SMIG horaire + charges)")
         return str(DEFAULT_HOURLY)
 
 def get_ai_price(description, row_context, python_detected_unit=None, quantity_str="1"):
