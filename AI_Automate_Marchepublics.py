@@ -264,7 +264,7 @@ FORMULA UNITS (When Unité contains expressions):
    - Default: 1
 
 7. explicit_min_price: Minimum price if stated
-   - Keywords: "offre inférieure à X sera écartée", "minimum", "plancher", "supérieur à", "est égale de", "est fixée à", "est de",
+   - Keywords: "offre inférieure à X sera écartée", "minimum", "plancher", "supérieur à", "est égale de", "est fixée à", "est de", "doit être égale à", "doit être égal à",
    - ARABIC KEYWORDS: "يقل عن", "الحد الأدنى", "أقل من", "مبلغ أدنى", "تقدير الكلفة", "محدد في مبلغ"
    - ⚠️ CRITICAL EXCLUSION: IGNORE strict legal references like "selon le décret... 17.92 dhs/heure", "salaire minimum légal (17.92)", or "salaire journalier de 143.36 DH".
    - REASON: These are legal citations (Base Salary ONLY), NOT the bid price limit (which usually includes Charges + Margin).
