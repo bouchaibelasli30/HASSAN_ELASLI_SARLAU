@@ -119,10 +119,11 @@ Agent jour 12h, Agent soir 12h — these are often NOT the default 8h).
 Independently of the role-matching above, search the ENTIRE document for the
 TOTAL number of agents/personnel required for the WHOLE contract (not just one
 role/shift). Look for phrases like "par X agents qualifiés", "effectif de X
-agents", "un effectif de X personnes", or a "Total" row at the bottom of a
-staffing/schedule table (e.g. "Total: 13 / 8 / 8" per shift — in that case sum
-the distinct people, or take the largest simultaneous total, whichever the
-document makes clearest).
+agents", "un effectif de X personnes", "X jardiniers qualifiés présents à
+chaque intervention", or a "Total" row at the bottom of a staffing/schedule
+table (e.g. "Total: 13 / 8 / 8" per shift — in that case sum the distinct
+people, or take the largest simultaneous total, whichever the document makes
+clearest).
 - Report this as "matched_total_agents" (an integer).
 - This is independent from "matched_hours_per_day" — fill both if you can find
   them, fill only the one you find if you can't find the other, and set
@@ -387,6 +388,23 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                         price = int(formula_price * 100) / 100.0
                         print(f"🧮 Symbolic Engine Result: {result['calculation_formula']} = {price}")
                 # -----------------------------------------------------------
+
+                # --- 🛑 FORFAIT SAFETY GUARD ---
+                # A "forfait" is a lump-sum covering the ENTIRE contract (often
+                # a whole team, ongoing/recurring service, weeks or months of
+                # work) — never a single hour. If Priority 2's SMIG formula
+                # produced a raw HOURLY rate (~17-24 DH) and nothing scaled it
+                # to the real scope of the forfait, using it as-is would submit
+                # a nonsensical near-zero total (this is exactly what got a
+                # real bid rejected: 23.81 DH for a whole landscaping
+                # contract). Treat this as "no usable price" instead, so the
+                # caller falls through to the duration/agent-aware fallback.
+                if unit_type == "forfait" and (is_hourly or result.get("is_calculated")):
+                    print(f"🛑 Rejecting raw hourly/calculated price ({price}) as a "
+                          f"'forfait' total — a forfait must cover the whole "
+                          f"contract, not one hour. Falling through instead of "
+                          f"submitting a near-zero total.")
+                    return None, matched_total_agents
 
                 # --- PYTHON MATH LOGIC (HOURLY -> DAILY) ---
                 # Fix: If price is "calculated" (SMIG formula), it is ALWAYS hourly.
