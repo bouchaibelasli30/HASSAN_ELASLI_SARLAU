@@ -267,7 +267,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
 """
 
     try:
-        print("🤖 Asking Gemini 3 flash (HIGH) to read FULL PDF...")
+        print("🤖 Asking Gemini to read FULL PDF...")
         
         contents = [
             types.Content(
@@ -279,81 +279,52 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
             )
         ]
 
-        full_response_text = ""
-        
-        # --- ATTEMPT 1: PRIMARY (HIGH) ---
         result = None
-        try:
-            primary_config = types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_level="HIGH"),
-                media_resolution="MEDIA_RESOLUTION_UNSPECIFIED",
-                response_mime_type="application/json",
-            )
-            
-            time.sleep(13)  # Respect RPM limit
-            for chunk in gemini_client.models.generate_content_stream(
-                model="gemini-3-flash-preview",
-                contents=contents,
-                config=primary_config,
-            ):
-                full_response_text += (chunk.text or "")
-            
-            # 🛡️ VALIDATION INSIDE TRY BLOCK
-            # This ensures bad JSON triggers the Except block below
-            match = re.search(r'\{.*\}', full_response_text, re.DOTALL)
-            if not match:
-                raise ValueError(f"No JSON found in response: {full_response_text[:50]}...")
-            
-            result = json.loads(match.group(0))
-
-        except Exception as e:
-            # --- FAILOVER LOGIC (Catches Network + JSON Errors) ---
-            error_msg = str(e)
-            
-            # List of Recoverable Errors (Network OR Bad JSON)
-            recoverable = [
-                "503", "429", "500", "504", "Overloaded",
-                "Expecting ',' delimiter", 
-                "Conversion failed",
-                "No JSON found",
-                "Invalid control character",
-                "Extra data"
-            ]
-            
-            if any(err in error_msg for err in recoverable):
-                print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 3.6 Flash...")
-                
-                # --- ATTEMPT 2: FALLBACK (Gemini 3.6 Flash) ---
+        models_to_try = ["gemini-2.5-flash", "gemini-2.5-pro"]
+        
+        # --- ATTEMPT WITH AUTO-RETRY LOOP (Handles 503 / 429 Errors) ---
+        for model_name in models_to_try:
+            for attempt in range(3):
                 try:
-                    fallback_config = types.GenerateContentConfig(
-                        thinking_config=types.ThinkingConfig(thinking_budget=8192),
+                    print(f"🤖 Calling {model_name} (Attempt {attempt+1}/3)...")
+                    full_response_text = ""
+                    config = types.GenerateContentConfig(
                         response_mime_type="application/json",
                     )
                     
-                    full_response_text = "" # Reset buffer
-                    time.sleep(13)  # Respect RPM limit
+                    time.sleep(2)  # Respect RPM limit
                     for chunk in gemini_client.models.generate_content_stream(
-                        model="gemini-3.6-flash",
+                        model=model_name,
                         contents=contents,
-                        config=fallback_config,
+                        config=config,
                     ):
                         full_response_text += (chunk.text or "")
                     
-                    # Parse Fallback Response
+                    # 🛡️ VALIDATION INSIDE TRY BLOCK
                     match = re.search(r'\{.*\}', full_response_text, re.DOTALL)
                     if match:
                         result = json.loads(match.group(0))
+                        break
                     else:
-                        print(f"⚠️ Gemini Flash also failed JSON: {full_response_text[:100]}...")
-                        return None, None
-                        
-                except Exception as e2:
-                    print(f"⚠️ Failover (Gemini 3.6 Flash) also crashed: {e2}")
-                    return None, None
-            else:
-                # If it's a critical error (e.g. Auth), re-raise
-                print(f"⚠️ Critical Error: {e}")
-                raise e
+                        raise ValueError(f"No JSON found in response: {full_response_text[:50]}...")
+
+                except Exception as e:
+                    error_msg = str(e)
+                    recoverable = [
+                        "503", "429", "500", "504", "Overloaded", "UNAVAILABLE",
+                        "Expecting ',' delimiter", "Conversion failed",
+                        "No JSON found", "Invalid control character", "Extra data"
+                    ]
+                    
+                    if any(err in error_msg for err in recoverable):
+                        wait_sec = (attempt + 1) * 3
+                        print(f"⏳ Server busy/Recoverable error ({error_msg[:40]}...). Retrying in {wait_sec}s...")
+                        time.sleep(wait_sec)
+                    else:
+                        print(f"⚠️ Non-recoverable Error: {e}")
+                        break
+            if result:
+                break
 
         # Logic for Processing Result (Only runs if result is set)
         if result:
@@ -387,6 +358,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                         # 💎 TRUNCATION SHIELD: Always round down for competitive edge
                         price = int(formula_price * 100) / 100.0
                         print(f"🧮 Symbolic Engine Result: {result['calculation_formula']} = {price}")
+                # -----------------------------------------------------------
 
                 # --- 🛑 FORFAIT SAFETY GUARD ---
                 if "forfait" in u_type and (is_hourly or result.get("is_calculated")):
@@ -416,9 +388,12 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                 # -------------------------------------------------
                 
                 if found_in_text_warning:
+                     # Text Warning: Return EXACT value (Priority 1)
                      print(f"👁️ Vision Extracted via WARNING: {price} (Exact Value - No Margin)")
                 
                 else: 
+                    # Apply User's Specific Formula (Context-Aware Adder):
+                    # Assurance (+0.01) | charge (+0.01) | Margin (+0.01)
                     adder = 0
                     log_parts = []
                     
@@ -440,6 +415,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                         
                 return price, matched_total_agents
             else:
+                 # Check for calculation flag
                 if result.get("is_calculated"):
                     print("👁️ Vision calculated price from SMIG formula.")
 
@@ -486,6 +462,7 @@ def read_pdf_from_bytes(file_bytes, unit_type=None, hours_per_day=None, role_des
        - Returns PRICE (float) or None.
     """
     try:
+        # Full unconditional scan as user requested
         print(f"🚀 Vision Engine: ACCELERATED [User Requested 100% Full Scan Mode]. Sending to Gemini...")
         return extract_price_with_gemini_vision(file_bytes, unit_type, hours_per_day, role_description)
 
@@ -778,8 +755,6 @@ def read_zip_and_extract_price(zip_path, unit_type, hours_per_day=None, role_des
                     continue
                 
                 # Fallback for Text-based files (Legacy Text Reader)
-                # Since 'extract_price_with_ai' is removed, we cannot process raw text.
-                # We rely on 'convert_office_to_pdf' which is handled in 'read_file_from_bytes'.
                 if isinstance(result, str):
                      print(f"   ⚠️ Raw text returned but Text AI is disabled. Skipping.")
                 else:
@@ -822,7 +797,10 @@ def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=Non
     
     # Step 4: Cleanup (optional - keep file for debugging)
     if os.path.exists(zip_path):
-        os.remove(zip_path)
+        try:
+            os.remove(zip_path)
+        except:
+            pass
     
     if price:
         print(f"✅ PDF Price: {price}")
@@ -834,4 +812,5 @@ def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=Non
 
 # --- TEST FUNCTION ---
 if __name__ == "__main__":
-    print("PDF Price Extractor Module Ready.")
+    print("PDF Price Extractor Module")
+    print("This module is designed to be imported by automate marchepublics - Copy.py")
