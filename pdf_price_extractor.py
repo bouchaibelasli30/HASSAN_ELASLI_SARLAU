@@ -61,6 +61,8 @@ def extract_price_with_gemini_vision(file_bytes, unit_type, hours_per_day=None, 
     Sends the FULL PDF to Gemini 3 Pro (Vision Mode).
     Uses 'Hierarchy of Truth' prompt to extract price from any layout (scanned/digital).
     """
+    u_type = str(unit_type).lower() if unit_type else ""
+
     total_hours_block = f"""
 [TOTAL WORK-HOURS FOR A LUMP-SUM "FORFAIT" LINE]
 Unit Type Context is "{unit_type}". If this is "forfait" (a single lump-sum line
@@ -314,13 +316,14 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                 "Expecting ',' delimiter", 
                 "Conversion failed",
                 "No JSON found",
-                "Invalid control character"
+                "Invalid control character",
+                "Extra data"
             ]
             
             if any(err in error_msg for err in recoverable):
                 print(f"⚠️ Recoverable Error ({error_msg}). FAILOVER to Gemini 3.6 Flash...")
                 
-                # --- ATTEMPT 2: FALLBACK (Gemini 2.5 Flash) ---
+                # --- ATTEMPT 2: FALLBACK (Gemini 3.6 Flash) ---
                 try:
                     fallback_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=8192),
@@ -345,7 +348,7 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                         return None, None
                         
                 except Exception as e2:
-                    print(f"⚠️ Failover (Gemini 2.5 Flash) also crashed: {e2}")
+                    print(f"⚠️ Failover (Gemini 3.6 Flash) also crashed: {e2}")
                     return None, None
             else:
                 # If it's a critical error (e.g. Auth), re-raise
@@ -364,72 +367,58 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
             missing_charge = result.get("missing_charge", False)
             missing_margin = result.get("missing_margin", False)
             
+            # --- 🎯 ROLE-MATCHED HOURS OVERRIDE ---
+            matched_hours = result.get("matched_hours_per_day")
+            if matched_hours:
+                print(f"🎯 Role-matched hours found in staffing table: {matched_hours}h "
+                      f"(overriding previous value: {hours_per_day})")
+                hours_per_day = float(matched_hours)
+
+            effective_hours = float(hours_per_day) if hours_per_day else 8.0
+
             if price and confidence != "none":
                 price = float(price)
                 matched_total_agents = result.get("matched_total_agents")
-
-                # --- 🎯 ROLE-MATCHED HOURS OVERRIDE ---
-                # If Gemini found the specific row for this role in a multi-role
-                # staffing table, trust that value over whatever hours_per_day was
-                # passed in (which may reflect a DIFFERENT role's hours, e.g. the
-                # short website description defaulting to 8h for "Chef d'équipe").
-                matched_hours = result.get("matched_hours_per_day")
-                if matched_hours:
-                    print(f"🎯 Role-matched hours found in staffing table: {matched_hours}h "
-                          f"(overriding previous value: {hours_per_day})")
-                    hours_per_day = matched_hours
 
                 # --- 🏁 GRAND-MASTER SYMBOLIC ENGINE (The Precision Layer) ---
                 if result.get("calculation_formula"):
                     formula_price = safe_math_eval(result["calculation_formula"])
                     if formula_price:
                         # 💎 TRUNCATION SHIELD: Always round down for competitive edge
-                        # int(x * 100) / 100.0 is the gold standard for bidding compliance
                         price = int(formula_price * 100) / 100.0
                         print(f"🧮 Symbolic Engine Result: {result['calculation_formula']} = {price}")
-                # -----------------------------------------------------------
 
                 # --- 🛑 FORFAIT SAFETY GUARD ---
-                # A "forfait" is a lump-sum covering the ENTIRE contract (often
-                # a whole team, ongoing/recurring service, weeks or months of
-                # work) — never a single hour. If Priority 2's SMIG formula
-                # produced a raw HOURLY rate (~17-24 DH) and nothing scaled it
-                # to the real scope of the forfait, using it as-is would submit
-                # a nonsensical near-zero total (this is exactly what got a
-                # real bid rejected: 23.81 DH for a whole landscaping
-                # contract). Treat this as "no usable price" instead, so the
-                # caller falls through to the duration/agent-aware fallback.
-                if unit_type == "forfait" and (is_hourly or result.get("is_calculated")):
+                if "forfait" in u_type and (is_hourly or result.get("is_calculated")):
                     print(f"🛑 Rejecting raw hourly/calculated price ({price}) as a "
                           f"'forfait' total — a forfait must cover the whole "
                           f"contract, not one hour. Falling through instead of "
                           f"submitting a near-zero total.")
                     return None, matched_total_agents
 
-                # --- PYTHON MATH LOGIC (HOURLY -> DAILY) ---
-                # Fix: If price is "calculated" (SMIG formula), it is ALWAYS hourly.
-                if is_hourly and unit_type == "jour":
-                    hours = hours_per_day if hours_per_day else 8
-                    calculated_price = round(price * hours, 2)
-                    print(f"🧮 Python Logic: Converted Hourly ({price}) -> Daily ({calculated_price}) using {hours} hours.")
-                    price = calculated_price
-                
-                # --- PYTHON MATH LOGIC (DAILY -> HOURLY) ---
-                # Fix: If the unit is "heure" but the AI extracted a non-hourly (daily) price.
-                elif not is_hourly and unit_type == "heure":
-                    hours = hours_per_day if hours_per_day else 8
-                    calculated_price = round(price / hours, 2)
-                    print(f"🧮 Python Logic: Converted Daily ({price}) -> Hourly ({calculated_price}) using {hours} hours.")
-                    price = calculated_price
-                # -------------------------------------------
+                # --- PYTHON MATH LOGIC (SMART UNIT CONVERSION) ---
+                if is_hourly or result.get("is_calculated"):
+                    if "jour" in u_type:
+                        calculated_price = round(price * effective_hours, 2)
+                        print(f"🧮 Python Logic: Converted Hourly ({price}) -> Daily ({calculated_price}) using {effective_hours} hours.")
+                        price = calculated_price
+                    elif "mois" in u_type:
+                        calculated_price = round(price * effective_hours * 26, 2)
+                        print(f"🧮 Python Logic: Converted Hourly ({price}) -> Monthly ({calculated_price}) using {effective_hours}h x 26j.")
+                        price = calculated_price
+                    elif "heure" in u_type:
+                        price = round(price, 2)
+                else:
+                    if "heure" in u_type:
+                        calculated_price = round(price / effective_hours, 2)
+                        print(f"🧮 Python Logic: Converted Daily ({price}) -> Hourly ({calculated_price}) using {effective_hours} hours.")
+                        price = calculated_price
+                # -------------------------------------------------
                 
                 if found_in_text_warning:
-                     # Text Warning: Return EXACT value (Priority 1)
                      print(f"👁️ Vision Extracted via WARNING: {price} (Exact Value - No Margin)")
                 
                 else: 
-                    # Apply User's Specific Formula (Context-Aware Adder):
-                    # Assurance (+0.01) | charge (+0.01) | Margin (+0.01)
                     adder = 0
                     log_parts = []
                     
@@ -451,35 +440,31 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
                         
                 return price, matched_total_agents
             else:
-                 # Check for calculation flag
                 if result.get("is_calculated"):
                     print("👁️ Vision calculated price from SMIG formula.")
 
                 matched_total_agents = result.get("matched_total_agents")
 
-                # --- 🎯 ROLE-MATCHED HOURS FALLBACK (no price/price-table found) ---
-                # Even when Priority 1/2/3 found no usable price (e.g. the document
-                # only has a staffing/schedule table like "Article 3. Effectif,
-                # horaires et organisation" with NO price breakdown columns),
-                # Gemini may still have located this specific role's row and
-                # extracted its real hours-per-shift into "matched_hours_per_day".
-                # Use that to compute a safe SMIG-based price ourselves — via the
-                # SAME formula already proven for the other roles — instead of
-                # falling all the way through to the generic flat default.
-                matched_hours = result.get("matched_hours_per_day")
-                if matched_hours:
-                    computed_price = round(17.92 * float(matched_hours) * 30, 2)
-                    print(f"🧮 No price found, but role-matched hours were: "
-                          f"{matched_hours}h/shift (from staffing table). "
-                          f"Computing SMIG-based price: 17.92 × {matched_hours}h × 30j "
-                          f"= {computed_price}")
-                    return computed_price, matched_total_agents
+                # --- 🎯 ROLE-MATCHED HOURS FALLBACK (FIXED UNIT MULTIPLIER) ---
+                if matched_hours or hours_per_day:
+                    h = float(matched_hours if matched_hours else hours_per_day)
+                    if "jour" in u_type:
+                        computed_price = round(17.92 * h, 2)
+                        print(f"🧮 Role-matched hours fallback: 17.92 × {h}h = {computed_price} DH/jour")
+                        return computed_price, matched_total_agents
+                    elif "mois" in u_type:
+                        computed_price = round(17.92 * h * 26, 2)
+                        print(f"🧮 Role-matched hours fallback: 17.92 × {h}h × 26j = {computed_price} DH/mois")
+                        return computed_price, matched_total_agents
+                    elif "heure" in u_type:
+                        computed_price = 17.92
+                        print(f"🧮 Role-matched hours fallback: 17.92 DH/heure")
+                        return computed_price, matched_total_agents
+                    else:
+                        computed_price = round(17.92 * h, 2)
+                        return computed_price, matched_total_agents
 
                 print(f"👁️ Vision found no price. Confidence: {confidence}")
-                # 🎯 Even with NO price at all, still surface matched_total_agents
-                # if Gemini found it — the caller needs this to decide whether a
-                # flat/generic fallback guess is safe (single position) or
-                # dangerous (large multi-agent team) before blindly guessing.
                 return None, matched_total_agents
         else:
             return None, None
@@ -501,7 +486,6 @@ def read_pdf_from_bytes(file_bytes, unit_type=None, hours_per_day=None, role_des
        - Returns PRICE (float) or None.
     """
     try:
-        # Full unconditional scan as user requested
         print(f"🚀 Vision Engine: ACCELERATED [User Requested 100% Full Scan Mode]. Sending to Gemini...")
         return extract_price_with_gemini_vision(file_bytes, unit_type, hours_per_day, role_description)
 
@@ -816,21 +800,6 @@ def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=Non
     """
     Main entry point for PDF price extraction.
     Called by main script when no price found in description.
-    
-    Args:
-        page: Playwright page object
-        unit_type: Detected unit type (heure, jour, mois, etc.)
-        hours_per_day: Hours per day from the earlier (short description) AI pass
-        role_description: The full row description (e.g. "Chef d'équipe"), used to
-            match the correct row in a multi-role staffing table inside the PDF.
-    
-    Returns:
-        (price, matched_total_agents) tuple. price is a string or None if not
-        found. matched_total_agents is the total agent/headcount the PDF's
-        staffing table stated for the WHOLE contract (int) or None if no such
-        statement was found — the caller needs this to judge whether a flat
-        fallback guess would be safe (single position) or dangerous (a large
-        multi-agent team), even when no usable price could be extracted.
     """
     print("\n📦 === PDF EXTRACTION MODE ===")
     
@@ -852,7 +821,8 @@ def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=Non
     price, matched_total_agents = read_zip_and_extract_price(zip_path, unit_type, hours_per_day, role_description)
     
     # Step 4: Cleanup (optional - keep file for debugging)
-    os.remove(zip_path)
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
     
     if price:
         print(f"✅ PDF Price: {price}")
@@ -864,5 +834,4 @@ def get_price_from_zip(page, unit_type, hours_per_day=None, role_description=Non
 
 # --- TEST FUNCTION ---
 if __name__ == "__main__":
-    print("PDF Price Extractor Module")
-    print("This module is designed to be imported by automate marchepublics - Copy.py")
+    print("PDF Price Extractor Module Ready.")
