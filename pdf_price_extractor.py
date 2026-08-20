@@ -41,6 +41,53 @@ def safe_math_eval(formula_str):
         print(f"⚠️ Math Execution Error: {e}")
         return None
 
+
+# 🧮 SMIG UNIT-PRICE CALCULATOR
+# Centralised helper so the "17.92 DH/heure SMIG" conversion logic lives in
+# ONE place instead of being duplicated. Used as the role-matched-hours
+# fallback when Gemini reports hours/agents but no explicit price.
+def compute_smig_unit_price(unit_type, effective_hours=8.0, smig_hourly=17.92, days_per_month=26):
+    """
+    كتحسب الثمن الوحدوي (prix unitaire) اعتمادا على SMIG بالساعة ونوع الوحدة.
+
+    - "heure" -> السميغ بالساعة مباشرة (مثلا 17.92 DH)
+    - "jour"  -> السميغ × عدد الساعات فالنهار (مثلا 17.92 × 4 = 71.68 DH)
+    - "mois"  -> السميغ × الساعات × 26 يوم (مثلا 17.92 × 4 × 26 = 1863.68 DH)
+
+    Args:
+        unit_type (str): نص فيه "heure" / "jour" / "mois" (case-insensitive,
+                          partial match زي u_type ديال الكود الأصلي).
+        effective_hours (float): عدد ساعات الخدمة فالنهار (h). Default 8.0.
+        smig_hourly (float): قيمة SMIG بالساعة. Default 17.92 DH.
+        days_per_month (int): عدد أيام العمل فالشهر. Default 26.
+
+    Returns:
+        float | None: الثمن المحسوب مقرب لـ 2 أرقام عشرية، ولا None إلا
+                       ماكانش نوع الوحدة معروف (heure/jour/mois).
+    """
+    u_type = str(unit_type).lower() if unit_type else ""
+    h = float(effective_hours) if effective_hours else 8.0
+
+    if "jour" in u_type:
+        computed_price = round(smig_hourly * h, 2)
+        print(f"🧮 SMIG Calc: {smig_hourly} × {h}h = {computed_price} DH/jour")
+        return computed_price
+
+    elif "mois" in u_type:
+        computed_price = round(smig_hourly * h * days_per_month, 2)
+        print(f"🧮 SMIG Calc: {smig_hourly} × {h}h × {days_per_month}j = {computed_price} DH/mois")
+        return computed_price
+
+    elif "heure" in u_type:
+        computed_price = round(smig_hourly, 2)
+        print(f"🧮 SMIG Calc: {computed_price} DH/heure (direct)")
+        return computed_price
+
+    else:
+        print(f"⚠️ SMIG Calc: unit type '{unit_type}' not recognized (heure/jour/mois).")
+        return None
+
+
 # --- CONFIGURATION ---
 DOWNLOAD_PATH = r"C:\Users\hp\Downloads\MarchePublics"
 LIBREOFFICE_PATH = r"C:\Program Files\LibreOffice\program\soffice.exe"
@@ -421,23 +468,11 @@ The 'calculation_formula' should contain the raw arithmetic steps from the table
 
                 matched_total_agents = result.get("matched_total_agents")
 
-                # --- 🎯 ROLE-MATCHED HOURS FALLBACK (FIXED UNIT MULTIPLIER) ---
+                # --- 🎯 ROLE-MATCHED HOURS FALLBACK (using shared SMIG calculator) ---
                 if matched_hours or hours_per_day:
                     h = float(matched_hours if matched_hours else hours_per_day)
-                    if "jour" in u_type:
-                        computed_price = round(17.92 * h, 2)
-                        print(f"🧮 Role-matched hours fallback: 17.92 × {h}h = {computed_price} DH/jour")
-                        return computed_price, matched_total_agents
-                    elif "mois" in u_type:
-                        computed_price = round(17.92 * h * 26, 2)
-                        print(f"🧮 Role-matched hours fallback: 17.92 × {h}h × 26j = {computed_price} DH/mois")
-                        return computed_price, matched_total_agents
-                    elif "heure" in u_type:
-                        computed_price = 17.92
-                        print(f"🧮 Role-matched hours fallback: 17.92 DH/heure")
-                        return computed_price, matched_total_agents
-                    else:
-                        computed_price = round(17.92 * h, 2)
+                    computed_price = compute_smig_unit_price(u_type, effective_hours=h)
+                    if computed_price is not None:
                         return computed_price, matched_total_agents
 
                 print(f"👁️ Vision found no price. Confidence: {confidence}")
