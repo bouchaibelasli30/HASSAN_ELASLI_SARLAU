@@ -70,42 +70,89 @@ MY_DATA = {
     'cnss_id': '2894672'
 }
 
-# --- SOUS DÉTAIL DES PRIX (SMIG + charges patronales) ---
-# Reproduit EXACTEMENT la formule du document "Sous Détail des Prix" imposé
+# --- SOUS DÉTAIL DES PRIX (SMIG + charges patronales) — VERSION GÉNÉRIQUE ---
+# Reproduit la formule standard du document "Sous Détail des Prix" imposé
 # par les marchés publics marocains (colonnes a → j) :
-#   a) SMIG/heure
-#   b) Congé annuel payé      = a * 5.77%   (1.5 jour / 26 jours travaillés)
-#   c) Jours fériés           = a * 4.17%   (13 jours fériés/an)
+#   a) SMIG (heure/jour/mois selon l'unité de l'avis)
+#   b) Congé annuel payé
+#   c) Jours fériés
 #   d) Total salaire          = a + b + c
-#   e) Prestations familiales = d * 6.40%
-#   f) AMO (base+solidarité)  = d * 4.11%
-#   g) Indemnités court/long terme = d * 8.98%
-#   h) Taxe Formation Professionnelle = d * 1.60%
-#   i) Autres cotisations     = 0 (sauf mention contraire dans l'avis)
+#   e) Prestations familiales = d * taux
+#   f) AMO (base+solidarité)  = d * taux
+#   g) Indemnités court/long terme = d * taux
+#   h) Taxe Formation Professionnelle = d * taux
+#   i) Autres cotisations     = 0 par défaut
 #   j) TOTAL HT (prix réel à soumissionner) = d + e + f + g + h + i
-# ⚠️ Le "17.92 DH/H" (SMIG brut) n'est QUE la colonne (a) — ce n'est PAS
-# un prix d'offre valable. Une offre chiffrée à 17.92 DH/H ne couvre pas
-# les charges obligatoires et risque d'être écartée par la commission.
-def calculate_sous_detail_price(base_smig_hourly=17.92,
-                                 conge_pct=0.0577, ferie_pct=0.0417,
-                                 prestations_fam_pct=0.0640, amo_pct=0.0411,
-                                 indemnites_pct=0.0898, tfp_pct=0.0160,
-                                 autres_cotisations=0.0):
-    """Calcule le vrai prix HT/heure (colonne j) à partir du SMIG horaire (colonne a),
-    en appliquant toutes les charges patronales du Sous Détail des Prix."""
-    a = base_smig_hourly
-    b = round(a * conge_pct, 4)
-    c = round(a * ferie_pct, 4)
+# ⚠️ Le SMIG brut (colonne a) N'EST PAS un prix d'offre valable — il ne
+# couvre pas les charges obligatoires.
+#
+# Ces 6 pourcentages sont fixés par la loi marocaine (Code du travail +
+# taux CNSS/AMO/TFP en vigueur) et sont donc les MÊMES dans la quasi-
+# totalité des avis. Mais chaque avis peut légalement en afficher une
+# variante (ex: nombre de jours fériés retenu, taux CNSS mis à jour...).
+# → DEFAULT_CHARGE_RATES sert de valeur de repli.
+# → extract_charge_rates_from_text() lit le texte de CHAQUE avis et
+#   récupère les taux qu'il affiche RÉELLEMENT, s'ils sont présents,
+#   pour que le calcul reste correct même si un avis change une valeur.
+DEFAULT_CHARGE_RATES = {
+    "conge_pct": 0.0577,             # Congé annuel payé
+    "ferie_pct": 0.0417,             # Jours fériés
+    "prestations_fam_pct": 0.0640,   # Prestations familiales
+    "amo_pct": 0.0411,               # AMO (base + solidarité)
+    "indemnites_pct": 0.0898,        # Indemnités court/long terme
+    "tfp_pct": 0.0160,               # Taxe Formation Professionnelle
+}
+
+# Motifs de recherche : "<label> ... X,XX %" ou "X,XX% ... <label>", en
+# tolérant les variantes FR courantes rencontrées dans les avis marocains.
+_RATE_PATTERNS = {
+    "conge_pct": r"cong[ée]s?\s*annuels?[^%\n]{0,40}?(\d{1,2}[.,]\d{1,2})\s*%",
+    "ferie_pct": r"jours?\s*f[ée]ri[ée]s?[^%\n]{0,40}?(\d{1,2}[.,]\d{1,2})\s*%",
+    "prestations_fam_pct": r"prestations?\s*familiales?[^%\n]{0,40}?(\d{1,2}[.,]\d{1,2})\s*%",
+    "amo_pct": r"AMO[^%\n]{0,40}?(\d{1,2}[.,]\d{1,2})\s*%",
+    "indemnites_pct": r"indemnit[ée]s?[^%\n]{0,40}?(\d{1,2}[.,]\d{1,2})\s*%",
+    "tfp_pct": r"taxe\s*(?:de\s*)?formation\s*professionnelle[^%\n]{0,40}?(\d{1,2}[.,]\d{1,2})\s*%",
+}
+
+def extract_charge_rates_from_text(text):
+    """Lit le texte propre à UN avis (description de la ligne, texte de la
+    page, ou texte du CPS/PDF si disponible) et récupère les taux de
+    charges qu'il affiche explicitement. Tout taux non trouvé dans le
+    texte retombe sur DEFAULT_CHARGE_RATES (taux légaux standards).
+    → Permet au calcul de rester juste pour N'IMPORTE QUEL avis, même si
+    ses pourcentages diffèrent de ceux de CHP Ifrane."""
+    rates = dict(DEFAULT_CHARGE_RATES)
+    if not text:
+        return rates
+    for key, pattern in _RATE_PATTERNS.items():
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                rates[key] = float(m.group(1).replace(",", ".")) / 100.0
+            except ValueError:
+                pass
+    return rates
+
+def calculate_sous_detail_price(base_smig, rates=None, autres_cotisations=0.0):
+    """Calcule le prix HT réel (colonne j) à partir d'un SMIG de base (heure,
+    jour, ou mois — selon l'unité de l'avis en cours), en appliquant les
+    charges patronales. `rates` = dict retourné par
+    extract_charge_rates_from_text() (taux spécifiques à CET avis), ou None
+    pour utiliser DEFAULT_CHARGE_RATES."""
+    r = rates or DEFAULT_CHARGE_RATES
+    a = base_smig
+    b = round(a * r["conge_pct"], 4)
+    c = round(a * r["ferie_pct"], 4)
     d = a + b + c                      # Total salaire chargé (congé + fériés)
-    e = round(d * prestations_fam_pct, 4)
-    f = round(d * amo_pct, 4)
-    g = round(d * indemnites_pct, 4)
-    h = round(d * tfp_pct, 4)
+    e = round(d * r["prestations_fam_pct"], 4)
+    f = round(d * r["amo_pct"], 4)
+    g = round(d * r["indemnites_pct"], 4)
+    h = round(d * r["tfp_pct"], 4)
     j = d + e + f + g + h + autres_cotisations
     return round(j, 2)
 
-# Taux horaire HT réel (SMIG + charges) — remplace le SMIG brut partout où
-# le code utilisait 17.92 comme SI c'était déjà un prix d'offre final.
+# Valeur de repli par défaut (taux légaux standards) — utilisée seulement
+# quand aucun texte spécifique à l'avis n'est disponible au moment du calcul.
 SMIG_HOURLY_HT = calculate_sous_detail_price(17.92)   # ≈ 23.86 DH/H
 
 # --- TARGET PRICES (FALLBACK ONLY IF AI FAILS) ---
@@ -698,6 +745,13 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
     if not data:
         return None
 
+    # 🎯 GÉNÉRIQUE: on lit les taux de charges PROPRES à CET avis (s'ils sont
+    # écrits dans son texte) plutôt que d'utiliser toujours les mêmes valeurs
+    # fixes. Si l'avis ne précise rien, on retombe sur les taux légaux
+    # standards (DEFAULT_CHARGE_RATES).
+    avis_rates = extract_charge_rates_from_text(row_context)
+    hourly_ht = calculate_sous_detail_price(17.92, rates=avis_rates)
+
     # --- NEW: COMPLEX MULTI-SHIFT TABLE LOGIC (Gardiennage/Sécurité) ---
     if data.get("has_complex_shift_table") and data.get("shift_periods"):
         total_hours = 0
@@ -708,13 +762,13 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
                 hours = shift.get("hours_per_shift", 8) or 8
                 total_hours += agents * hours * period_days
         if total_hours > 0:
-            final = round(total_hours * SMIG_HOURLY_HT, 2)
-            print(f"🧮 Complex Shift Table: {total_hours}h total × {SMIG_HOURLY_HT} DH (SMIG+charges) = {final} DH HT")
+            final = round(total_hours * hourly_ht, 2)
+            print(f"🧮 Complex Shift Table: {total_hours}h total × {hourly_ht} DH (SMIG+charges de cet avis) = {final} DH HT")
             return str(final)
     # --- END NEW LOGIC ---
 
     # Default values
-    DEFAULT_HOURLY = SMIG_HOURLY_HT   # 23.86 (SMIG + charges patronales), pas 17.92 brut
+    DEFAULT_HOURLY = hourly_ht   # SMIG + charges patronales SPÉCIFIQUES à cet avis
     DEFAULT_DAILY = 143.36
     DEFAULT_MONTHLY = 4144.00
     
@@ -943,8 +997,8 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # If no explicit salary AND hours are NON-STANDARD (not 8), calculate correct salary.
         # Handles Part-Time (<8h) AND Overtime (>8h like 12h/24h).
         if not salary and hours_per_day and hours_per_day != 8:
-             final_salary = round(SMIG_HOURLY_HT * hours_per_day * work_days_multiplier, 2)
-             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({SMIG_HOURLY_HT} * {hours_per_day}h * {work_days_multiplier}d)")
+             final_salary = round(hourly_ht * hours_per_day * work_days_multiplier, 2)
+             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({hourly_ht} * {hours_per_day}h * {work_days_multiplier}d, taux de cet avis)")
              salary = final_salary
 
         if salary:
@@ -969,8 +1023,8 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # Handles Part-Time (<8h) AND Overtime (>8h like 12h/24h).
         if not salary and hours_per_day and hours_per_day != 8:
              # Uses Centralized 'work_days_multiplier' (Safe & Consolidated)
-             final_salary = round(SMIG_HOURLY_HT * hours_per_day * work_days_multiplier, 2)
-             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({SMIG_HOURLY_HT} * {hours_per_day}h * {work_days_multiplier}d)")
+             final_salary = round(hourly_ht * hours_per_day * work_days_multiplier, 2)
+             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({hourly_ht} * {hours_per_day}h * {work_days_multiplier}d, taux de cet avis)")
              salary = final_salary
         # ------------------------------------------------
 
@@ -992,8 +1046,8 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
         # If no explicit salary AND hours are NON-STANDARD (not 8), calculate correct salary.
         # Handles Part-Time (<8h) AND Overtime (>8h like 12h/24h).
         if not salary and hours_per_day and hours_per_day != 8:
-             final_salary = round(SMIG_HOURLY_HT * hours_per_day * work_days_multiplier, 2)
-             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({SMIG_HOURLY_HT} * {hours_per_day}h * {work_days_multiplier}d)")
+             final_salary = round(hourly_ht * hours_per_day * work_days_multiplier, 2)
+             print(f"🧮 Universal Logic: Adjusted Salary for {hours_per_day}H work. Calculated {final_salary} ({hourly_ht} * {hours_per_day}h * {work_days_multiplier}d, taux de cet avis)")
              salary = final_salary
 
         if salary:
@@ -1408,8 +1462,11 @@ def fill_tender_form(page):
                         target_value = TARGET_PRICES["mois"]      # Returns 4144.00 (Explicit)
                         print(f"⚠️ Fallback to Standard MONTHLY Price: {target_value} (Source: {'Python' if 'mois' in detected_unit else 'AI'})")
                     elif detected_unit == "heure" or unit_ai == "heure":
-                        target_value = TARGET_PRICES["heure"]     # Returns 17.92 (Explicit)
-                        print(f"⚠️ Fallback to Standard HOURLY Price: {target_value} (Source: {'Python' if detected_unit=='heure' else 'AI'})")
+                        avis_rates = extract_charge_rates_from_text(
+                            context.get("description", "") + " " + row_text
+                        )
+                        target_value = calculate_sous_detail_price(17.92, rates=avis_rates)
+                        print(f"⚠️ Fallback to Standard HOURLY Price (SMIG+charges de cet avis): {target_value} (Source: {'Python' if detected_unit=='heure' else 'AI'})")
                     elif detected_unit == "forfait" or unit_ai == "forfait":
                         # 🛡️ Don't blindly reuse the generic MONTHLY fallback
                         # for a forfait that clearly covers a MULTI-DAY scope
@@ -1468,7 +1525,8 @@ def fill_tender_form(page):
                     elif "jour" in row_text or " j " in f" {row_text} " or row_text.startswith("j"):
                         target_value = TARGET_PRICES["jour"]
                     elif "heure" in row_text or " h " in f" {row_text} " or row_text.startswith("h"):
-                        target_value = TARGET_PRICES["heure"]
+                        avis_rates = extract_charge_rates_from_text(context.get("description", "") + " " + row_text)
+                        target_value = calculate_sous_detail_price(17.92, rates=avis_rates)
                 
                 if target_value:
                     existing_price = spin.first.input_value()
