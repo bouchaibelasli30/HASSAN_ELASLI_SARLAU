@@ -637,12 +637,18 @@ def safe_parse_quantity(q_str):
 DEFAULT_DAILY_PATCH = TARGET_PRICES["jour"]  # 143.36
 
 
-def calculate_final_price_jour_patch(data, row_context, quantity_str=None):
+def calculate_final_price_jour_patch(data, row_context, quantity_str=None, hourly_ht=None):
     """
     Dedicated calculation for unit_type == "jour".
     Multiplies the per-agent daily rate by num_agents whenever several
     agents must be present simultaneously each day, since the site's
     Quantité column (for this unit) only ever represents days.
+
+    🩹 hourly_ht = taux HT/heure (SMIG + charges patronales) DÉJÀ calculé
+    pour CET avis (voir extract_charge_rates_from_text). On l'utilise ×
+    hours_per_day pour obtenir le tarif journalier réel — au lieu du
+    DEFAULT_DAILY_PATCH fixe (143.36 = 17.92×8h) qui ignorait les avis où
+    l'horaire n'est PAS 8h/jour (ex: "4 heures par jour").
     """
     num_agents = data.get("num_agents") or 1
     explicit_min_price = data.get("explicit_min_price")
@@ -650,6 +656,7 @@ def calculate_final_price_jour_patch(data, row_context, quantity_str=None):
     min_price_is_hourly = data.get("min_price_is_hourly", False)
     hours_per_day = data.get("hours_per_day", 8) or 8
     qty = safe_parse_quantity(quantity_str)
+    daily_rate = round(17.92 * hours_per_day, 2)  # "jour": SMIG brut demandé par le client, SANS charges
 
     # ---------- CAS A: prix minimum explicite trouvé dans le texte ----------
     if explicit_min_price:
@@ -717,21 +724,25 @@ def calculate_final_price_jour_patch(data, row_context, quantity_str=None):
             is_clean_whole = abs(implied_days - round(implied_days)) < 0.05
             is_plausible_duration = 5 <= implied_days <= 400
             if is_clean_whole and is_plausible_duration:
-                final = DEFAULT_DAILY_PATCH
+                final = daily_rate
                 print(f"🛡️ Sanity check: qty({qty}) / num_agents({num_agents}) = "
                       f"{implied_days:.1f} looks like a clean day-count — "
                       f"'Quantité' is very likely ALREADY agent-days. "
-                      f"Using SMIG rate as-is: {final} (NOT multiplying by "
-                      f"{num_agents} agents, to avoid double-counting).")
+                      f"Using SMIG brut (sans charges): {final} ({hours_per_day}h/jour) "
+                      f"(NOT multiplying by {num_agents} agents, to avoid double-counting).")
                 return str(final)
 
-        final = round(DEFAULT_DAILY_PATCH * num_agents, 2)
-        print(f"🧮 Jour (fallback SMIG × agents): {DEFAULT_DAILY_PATCH} × {num_agents} agents = {final} "
+        final = round(daily_rate * num_agents, 2)
+        print(f"🧮 Jour (SMIG brut × heures × agents): {daily_rate} ({hours_per_day}h/jour) × {num_agents} agents = {final} "
               f"— Quantité site = jours seulement, pas agent-jours")
         return str(final)
 
-    print("🔍 Unit is 'jour' but no explicit price found (1 agent) - will try PDF extraction")
-    return None
+    # 1 seul agent, pas de prix explicite -> calcul direct SMIG BRUT ×
+    # heures réelles de CET avis (au lieu de renvoyer None et de finir sur
+    # le fallback fixe 143.36=17.92×8h, faux dès que l'avis précise un
+    # horaire différent de 8h/jour, ex: "4 heures par jour").
+    print(f"🧮 Jour (SMIG brut × heures réelles, 1 agent, SANS charges): 17.92 × {hours_per_day}h = {daily_rate}")
+    return str(daily_rate)
 # ================================================================
 # 🩹 END PATCH
 # ================================================================
@@ -781,7 +792,7 @@ def calculate_final_price(data, row_context, python_detected_unit=None, quantity
     # 🩹 PATCH HOOK: "jour" gets its own dedicated logic (multi-agent aware),
     # intercepted here BEFORE any of the generic branches below run.
     if unit_type == "jour":
-        return calculate_final_price_jour_patch(data, row_context, quantity_str)
+        return calculate_final_price_jour_patch(data, row_context, quantity_str, hourly_ht=hourly_ht)
 
     num_agents = data.get("num_agents") or 1
     salary_per_agent = data.get("salary_per_agent")
@@ -1220,7 +1231,12 @@ def run_perfect_flow(timeout=90):
     
     # Select Certificate
     name_pos = None
+    name_wait_start = time.time()
+    NAME_TIMEOUT = 20  # secondes — au-delà, on suppose que l'image ne matchera jamais (DPI/résolution différente)
     while not name_pos:
+        if time.time() - name_wait_start > NAME_TIMEOUT:
+            print(f"⚠️ '{IMG_NAME}' introuvable après {NAME_TIMEOUT}s (résolution/DPI a peut-être changé).")
+            break
         # HIGH-DPI FIX: Removed region=region to allow full screen search
         # 🛡️ opencv-backed pyautogui raises ImageNotFoundException instead of
         # returning None when the image isn't found yet - catch it so this
@@ -1236,7 +1252,12 @@ def run_perfect_flow(timeout=90):
 
     # Click Valider
     valider_pos = None
+    valider_wait_start = time.time()
+    VALIDER_TIMEOUT = 20  # secondes — même logique que ci-dessus
     while not valider_pos:
+        if time.time() - valider_wait_start > VALIDER_TIMEOUT:
+            print(f"⚠️ '{IMG_VALIDER}' introuvable après {VALIDER_TIMEOUT}s (résolution/DPI a peut-être changé).")
+            break
         # HIGH-DPI FIX: Removed region=region to allow full screen search
         try:
             valider_pos = pyautogui.locateCenterOnScreen(IMG_VALIDER, confidence=0.8, grayscale=True)
@@ -1247,15 +1268,47 @@ def run_perfect_flow(timeout=90):
             break
         time.sleep(0.1)
 
+    # 🧑‍💻 INTERVENTION MANUELLE: si le clic auto (Nom ou Valider) a échoué,
+    # ON N'AVANCE PAS aveuglément vers le PIN (ça faisait taper le PIN dans le
+    # vide et échouer la signature en silence, ~50s plus tard, avec une
+    # erreur confuse sur "soumettre"). On attend ici que la personne clique
+    # elle-même, avec de vrais rappels, jusqu'à ce que la fenêtre certificat
+    # se ferme (= signe fiable que Valider a été cliqué, auto ou manuel).
+    if not (name_pos and valider_pos):
+        MANUAL_TIMEOUT = 90
+        print(f"👉 Clique MANUELLEMENT sur le certificat puis 'Valider' (jusqu'à {MANUAL_TIMEOUT}s)...")
+        manual_wait_start = time.time()
+        last_reminder = manual_wait_start
+        while gw.getWindowsWithTitle(CERT_TITLE):
+            if time.time() - manual_wait_start > MANUAL_TIMEOUT:
+                print("❌ Timeout: fenêtre certificat toujours ouverte après intervention manuelle attendue.")
+                return False
+            if time.time() - last_reminder > 15:
+                remaining = int(MANUAL_TIMEOUT - (time.time() - manual_wait_start))
+                print(f"⏳ Toujours en attente de ton clic sur 'Valider'... ({remaining}s restantes)")
+                last_reminder = time.time()
+            time.sleep(0.3)
+        print("✅ Fenêtre certificat fermée — clic détecté, on continue.")
+
     # 2. SMART PIN HANDLING (UIA Based)
     print("⌨️ Handing PIN Window...")
     pin_success = False
+    pin_window_seen = False  # ⚠️ ne jamais taper le PIN "à l'aveugle" si on n'a
+                              # jamais vu la fenêtre PIN — sinon il part dans
+                              # n'importe quelle fenêtre qui a le focus
+                              # (terminal, navigateur...) au lieu d'échouer proprement.
     start_pin_wait = time.time()
-    
-    while time.time() - start_pin_wait < 15:
+    PIN_TIMEOUT = 45  # 15s -> 45s: laisse le temps à une personne de réagir
+    last_pin_reminder = start_pin_wait
+
+    while time.time() - start_pin_wait < PIN_TIMEOUT:
+        if time.time() - last_pin_reminder > 15:
+            print(f"⏳ En attente de la fenêtre PIN... ({int(PIN_TIMEOUT - (time.time() - start_pin_wait))}s restantes)")
+            last_pin_reminder = time.time()
         try:
             handles = findwindows.find_windows(title=PIN_TITLE)
             if handles:
+                pin_window_seen = True
                 hwnd = handles[0]
                 app = Application(backend="uia").connect(handle=hwnd)
                 dlg = app.window(handle=hwnd)
@@ -1277,10 +1330,14 @@ def run_perfect_flow(timeout=90):
         except Exception:
             time.sleep(0.3)
 
-    if not pin_success:
-        print("⚠️ UIA limited. Trying direct typing fallback...")
+    if not pin_success and pin_window_seen:
+        # La fenêtre PIN a bien été vue au moins une fois (donc le focus a
+        # de bonnes chances d'être encore dessus) -> fallback raisonnable.
+        print("⚠️ UIA limité mais fenêtre PIN détectée. Tentative de saisie directe...")
         pyautogui.write(MY_PIN, interval=0.03)
         pyautogui.press('enter')
+    elif not pin_success:
+        print("❌ Fenêtre PIN jamais détectée après {}s — signature probablement incomplète.".format(PIN_TIMEOUT))
 
     # 3. SMART BARRIER
     print("⏳ Waiting for desktop windows to finalize...")
@@ -1337,20 +1394,45 @@ def fill_tender_form(page):
             safe_fill(page.get_by_role("textbox", name=name), value)
 
         # RIB handling
+        # 🐛 BUG CORRIGÉ: .is_visible() ne fait AUCUNE attente (contrairement à
+        # .click()) — c'est un check instantané. Si la page vient de charger/
+        # scroller vers cette section, le lien peut ne pas être encore rendu
+        # à ce millisecond précis → is_visible() renvoie False pour les DEUX
+        # liens → aucune branche ne s'exécute → le <select> "Compte bancaire"
+        # reste tel quel → rib_field (textbox) n'existe jamais → timeout →
+        # exception non récupérée → le tender entier est abandonné en plein
+        # milieu, page figée exactement comme dans la capture d'écran.
         activate_link = page.get_by_role("link", name="Activer la saisie libre")
         deactivate_link = page.get_by_role("link", name="Désactiver la saisie libre")
-        
-        if deactivate_link.is_visible():
-            print("ℹ️ Free RIB entry already active. Proceeding...")
-        elif activate_link.is_visible():
-            print("🖱️ Activating free RIB entry...")
-            safe_click(activate_link)
-            page.wait_for_timeout(400)
+
+        rib_is_free_text = False
+        rib_wait_start = time.time()
+        while time.time() - rib_wait_start < 8:  # vraie attente (poll), pas un check instantané
+            if deactivate_link.is_visible():
+                rib_is_free_text = True
+                break
+            if activate_link.is_visible():
+                print("🖱️ Activating free RIB entry...")
+                safe_click(activate_link)
+                page.wait_for_timeout(500)
+                rib_is_free_text = True
+                break
+            page.wait_for_timeout(200)
+
+        if not rib_is_free_text:
+            print("⚠️ Ni 'Activer' ni 'Désactiver la saisie libre' trouvés après 8s — nouvelle tentative...")
 
         rib_field = page.get_by_role("textbox", name="Saisissez votre RIB")
-        rib_field.wait_for(state="visible", timeout=3000)
+        try:
+            rib_field.wait_for(state="visible", timeout=6000)
+        except Exception:
+            print("⚠️ Champ RIB introuvable — tentative de réactivation...")
+            if activate_link.is_visible():
+                safe_click(activate_link)
+            rib_field.wait_for(state="visible", timeout=6000)  # dernier essai, laisse planter si ça échoue vraiment
+
         current_rib = rib_field.input_value()
-        
+
         if current_rib.strip() != MY_DATA['rib']:
             safe_fill(rib_field, MY_DATA['rib'])
 
@@ -1448,16 +1530,20 @@ def fill_tender_form(page):
 
                     if detected_unit == "jour" or unit_ai == "jour":
                         # 🩹 Even in the last-resort fallback, respect num_agents
-                        # if the AI managed to extract it despite failing to
-                        # produce a full price (avoids reverting the "18 vigiles"
-                        # bug in the fallback path too).
+                        # AND hours_per_day if the AI managed to extract them
+                        # despite failing to produce a full price (avoids both
+                        # the "18 vigiles" bug and the "4h/jour" bug in the
+                        # fallback path too).
                         fallback_agents = (ai_data.get("num_agents") if ai_data else None) or 1
+                        fallback_hours_per_day = (ai_data.get("hours_per_day") if ai_data else None) or 8
+                        avis_rates = extract_charge_rates_from_text(context.get("description", "") + " " + row_text)
+                        daily_rate_fb = round(17.92 * fallback_hours_per_day, 2)  # "jour": SMIG brut, SANS charges
                         if fallback_agents > 1:
-                            target_value = round(TARGET_PRICES["jour"] * fallback_agents, 2)
-                            print(f"⚠️ Fallback to Standard DAILY Price × {fallback_agents} agents: {target_value}")
+                            target_value = round(daily_rate_fb * fallback_agents, 2)
+                            print(f"⚠️ Fallback DAILY Price: {daily_rate_fb} ({fallback_hours_per_day}h/jour, SMIG brut sans charges) × {fallback_agents} agents = {target_value}")
                         else:
-                            target_value = TARGET_PRICES["jour"]      # Returns 143.36 (Explicit)
-                            print(f"⚠️ Fallback to Standard DAILY Price: {target_value} (Source: {'Python' if detected_unit=='jour' else 'AI'})")
+                            target_value = daily_rate_fb
+                            print(f"⚠️ Fallback DAILY Price: SMIG brut (sans charges) × {fallback_hours_per_day}h/jour = {target_value} (Source: {'Python' if detected_unit=='jour' else 'AI'})")
                     elif detected_unit == "mois" or detected_unit == "mois_agent" or unit_ai == "mois":
                         target_value = TARGET_PRICES["mois"]      # Returns 4144.00 (Explicit)
                         print(f"⚠️ Fallback to Standard MONTHLY Price: {target_value} (Source: {'Python' if 'mois' in detected_unit else 'AI'})")
@@ -1523,7 +1609,9 @@ def fill_tender_form(page):
                     elif "mois" in row_text or " m " in f" {row_text} " or row_text.startswith("m"):
                         target_value = TARGET_PRICES["mois"]
                     elif "jour" in row_text or " j " in f" {row_text} " or row_text.startswith("j"):
-                        target_value = TARGET_PRICES["jour"]
+                        bm_hours_per_day = (ai_data.get("hours_per_day") if ai_data else None) or 8
+                        avis_rates = extract_charge_rates_from_text(context.get("description", "") + " " + row_text)
+                        target_value = round(17.92 * bm_hours_per_day, 2)  # "jour": SMIG brut, SANS charges
                     elif "heure" in row_text or " h " in f" {row_text} " or row_text.startswith("h"):
                         avis_rates = extract_charge_rates_from_text(context.get("description", "") + " " + row_text)
                         target_value = calculate_sous_detail_price(17.92, rates=avis_rates)
