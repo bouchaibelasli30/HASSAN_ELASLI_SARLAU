@@ -1601,8 +1601,20 @@ def fill_tender_form(page):
                             target_value = TARGET_PRICES["mois"]      # Last-resort default (only after AI + PDF extraction both failed)
                             print(f"⚠️ Fallback to Standard MONTHLY Price for 'forfait' (last resort, AI+PDF both failed): {target_value}")
                     elif detected_unit in ["personne", "agent"] or unit_ai in ["personne", "agent"]:
-                        target_value = TARGET_PRICES["personne"]  # Last-resort default (only after AI + PDF extraction both failed)
-                        print(f"⚠️ Fallback to Standard 'personne/poste' Price (last resort, AI+PDF both failed): {target_value}")
+                        # 🩹 FIX: TARGET_PRICES["personne"] is a MONTHLY salary fallback
+                        # (same assumption as the main calculate_final_price() logic,
+                        # which does `salary * num_months`). The old code returned it
+                        # as-is regardless of contract duration, so a 3-month "Agent"
+                        # lot got priced as if it were only 1 month (e.g. 3 500 DH
+                        # instead of 3 × 3 500 = 10 500 DH) — same bug the "jour"
+                        # fallback above already guards against with fallback_agents.
+                        fallback_months = (ai_data.get("num_months") if ai_data else None) or 1
+                        if fallback_months > 1:
+                            target_value = round(TARGET_PRICES["personne"] * fallback_months, 2)
+                            print(f"⚠️ Fallback to Standard 'personne/poste' Price × {fallback_months} months: {target_value} (last resort, AI+PDF both failed)")
+                        else:
+                            target_value = TARGET_PRICES["personne"]  # Last-resort default (only after AI + PDF extraction both failed)
+                            print(f"⚠️ Fallback to Standard 'personne/poste' Price (last resort, AI+PDF both failed): {target_value}")
                     
                     # PRIORITY B: Broad Match (Only if Unit Column failed)
                     # REORDERED: Check 'Mois' & 'Jour' first, because 'Heure' is a common noise word
